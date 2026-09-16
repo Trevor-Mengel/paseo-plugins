@@ -91,7 +91,7 @@ test("concurrent store scopes isolate config, history, quota, memory and session
     });
   }
   expect(ompAgentDir()).toBe("/daemon-default-must-not-be-read");
-  expect(ompSessionDir()).toBe("/daemon-session-must-not-be-read");
+  expect(ompSessionDir()).toBe(resolve("/daemon-session-must-not-be-read"));
 });
 
 test("a selected profile clears conflicting daemon overrides without mutating its environment", () => {
