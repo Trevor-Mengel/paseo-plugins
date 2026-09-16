@@ -17,7 +17,7 @@ import type {
   OmpVersionStatus,
   PathState,
 } from "../shared/provider-diagnostics";
-import { currentOmpEnvironment, ompAgentDir } from "./paths";
+import { currentOmpEnvironment, ompAgentDir, ompDataDir, ompSessionDir } from "./paths";
 
 const VERSION_TIMEOUT_MS = 3_000;
 const HELP_TIMEOUT_MS = 3_000;
@@ -946,16 +946,23 @@ function sanitizeRootPath(path: string, homeDir: string): string {
   return homeRelative(path, homeDir) ?? "<custom path>";
 }
 
-function sanitizeDerivedPath(rawRoot: string, sanitizedRoot: string, fullPath: string): string {
+function sanitizeDerivedPath(
+  rawRoot: string,
+  sanitizedRoot: string,
+  fullPath: string,
+  fallbackHomeDir?: string,
+): string {
   const suffix = relative(rawRoot, fullPath);
   if (suffix === "" || suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) {
-    return sanitizedRoot;
+    return fallbackHomeDir ? sanitizeRootPath(fullPath, fallbackHomeDir) : sanitizedRoot;
   }
   return `${sanitizedRoot}/${suffix.split(sep).join("/")}`;
 }
 
 export interface ProviderDiagnosticsDeps {
   agentDir: string;
+  dataDir?: string;
+  sessionDir?: string;
   command: string;
   pathDirs: readonly string[];
   cwd: string;
@@ -976,6 +983,8 @@ export async function computeOmpProviderHealth(
   deps: ProviderDiagnosticsDeps,
 ): Promise<OmpProviderHealth> {
   const agentDir = resolve(deps.agentDir);
+  const dataDir = resolve(deps.dataDir ?? agentDir);
+  const sessionRoot = resolve(deps.sessionDir ?? join(dataDir, SESSION_DIR_NAME));
   const homeDir = resolve(deps.homeDir);
   const versionTimeoutMs = deps.versionTimeoutMs ?? VERSION_TIMEOUT_MS;
   const helpTimeoutMs = deps.helpTimeoutMs ?? HELP_TIMEOUT_MS;
@@ -1025,9 +1034,8 @@ export async function computeOmpProviderHealth(
   const lsp = helpRun ? computeLspDiagnostics(helpRun) : { status: "unknown" as const };
   const processCleanupFailed = Boolean(versionRun?.cleanupFailed || helpRun?.cleanupFailed);
 
-  const agentDbPath = join(agentDir, AGENT_DB_FILENAME);
-  const historyDbPath = join(agentDir, HISTORY_DB_FILENAME);
-  const sessionRoot = join(agentDir, SESSION_DIR_NAME);
+  const agentDbPath = join(dataDir, AGENT_DB_FILENAME);
+  const historyDbPath = join(dataDir, HISTORY_DB_FILENAME);
   const [
     configResult,
     agentRootState,
@@ -1068,7 +1076,7 @@ export async function computeOmpProviderHealth(
       agentRootState,
       configPath: sanitizeDerivedPath(agentDir, sanitizedAgentRoot, configResult.path),
       configState,
-      sessionRoot: sanitizeDerivedPath(agentDir, sanitizedAgentRoot, sessionRoot),
+      sessionRoot: sanitizeDerivedPath(agentDir, sanitizedAgentRoot, sessionRoot, homeDir),
       sessionRootState,
     },
     databases: {
@@ -1084,8 +1092,8 @@ export async function computeOmpProviderHealth(
 const cachedHealth = new Map<string, { value: OmpProviderHealth; expiresAt: number }>();
 const inFlightHealth = new Map<string, Promise<OmpProviderHealth>>();
 
-function defaultHubRunRoot(): string {
-  return currentOmpEnvironment().PASEO_OMP_RUN_DIR ?? join(homedir(), ".omp", "run", "daemons");
+function defaultHubRunRoot(environment: NodeJS.ProcessEnv = currentOmpEnvironment()): string {
+  return environment.PASEO_OMP_RUN_DIR ?? join(homedir(), ".omp", "run", "daemons");
 }
 
 /**
@@ -1098,23 +1106,29 @@ export async function resolveGetOmpProviderHealth(
   input: RpcInput<typeof getOmpProviderHealth>,
 ): Promise<OmpProviderHealth> {
   const cwd = input.cwd ?? process.cwd();
+  const environment = currentOmpEnvironment();
+  const agentDir = ompAgentDir(environment);
+  const dataDir = ompDataDir(environment);
+  const sessionDir = ompSessionDir(environment);
   const now = Date.now();
-  const key = JSON.stringify([cwd, ompAgentDir()]);
+  const key = JSON.stringify([cwd, agentDir, dataDir, sessionDir]);
   const cached = cachedHealth.get(key);
   if (!input.force && cached && cached.expiresAt > now) return cached.value;
   const inFlight = inFlightHealth.get(key);
   if (inFlight) return inFlight;
 
   const computation = computeOmpProviderHealth({
-    agentDir: ompAgentDir(),
-    command: currentOmpEnvironment().OMP_COMMAND ?? "omp",
-    pathDirs: (currentOmpEnvironment().PATH ?? "").split(delimiter),
+    agentDir,
+    dataDir,
+    sessionDir,
+    command: environment.OMP_COMMAND ?? "omp",
+    pathDirs: (environment.PATH ?? "").split(delimiter),
     cwd,
     platform: process.platform,
-    pathExt: currentOmpEnvironment().PATHEXT ?? WINDOWS_DEFAULT_PATHEXT,
-    env: currentOmpEnvironment(),
+    pathExt: environment.PATHEXT ?? WINDOWS_DEFAULT_PATHEXT,
+    env: environment,
     spawnFn: defaultSpawn,
-    hubRunRoot: defaultHubRunRoot(),
+    hubRunRoot: defaultHubRunRoot(environment),
     homeDir: homedir(),
   })
     .then((value) => {

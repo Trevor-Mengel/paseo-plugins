@@ -1,7 +1,21 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
-export const OmpProfileNameSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/);
+const OMP_PROFILE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
+const WINDOWS_RESERVED_PROFILE = /^(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(?:\..*)?$/iu;
+
+export function isOmpProfileName(value: string): boolean {
+  return (
+    value !== "default" &&
+    !value.endsWith(".") &&
+    OMP_PROFILE_NAME.test(value) &&
+    !WINDOWS_RESERVED_PROFILE.test(value)
+  );
+}
+
+export const OmpProfileNameSchema = z.string().trim().refine(isOmpProfileName, {
+  message: "Invalid named OMP profile",
+});
 export const OmpStoreSchema = z
   .object({
     profile: OmpProfileNameSchema.optional(),
@@ -26,8 +40,8 @@ export const listOmpStores = defineRpc({
 
 export function storeForProvider(provider: string | undefined): OmpStore | undefined {
   if (!provider?.startsWith("omp-plugin-")) return;
-  const profile = provider.slice("omp-plugin-".length);
-  return OmpProfileNameSchema.safeParse(profile).success ? { profile } : undefined;
+  const parsed = OmpProfileNameSchema.safeParse(provider.slice("omp-plugin-".length));
+  return parsed.success ? { profile: parsed.data } : undefined;
 }
 export function storeLabel(store?: OmpStore): string {
   return store?.profile

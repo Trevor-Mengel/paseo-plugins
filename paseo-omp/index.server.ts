@@ -49,7 +49,6 @@ export default function contribute(server: PluginServerContext) {
   const profiles = discoverOmpProfilesSync();
   server.handle(listOmpStores, async () => ({ profiles: await discoverOmpProfiles() }));
   for (const profile of profiles) {
-    if (/[A-Z]/.test(profile)) continue; // Paseo provider IDs are lowercase.
     server.registerProvider(createProfileOmpProvider(profile, { browserAuthorizationRegistry }));
   }
   server.handle(listHubProcesses, resolveListHubProcesses);

@@ -88,12 +88,27 @@ describe("profile discovery and provider identity", () => {
   test("enumerates only valid real directories, sorted, without opening profile files", async () => {
     const { home, environment } = await fixture();
     const root = join(home, ".omp", "profiles");
-    for (const name of ["team-beta", "default", "team-alpha", "Work_2", "bad.name", ".hidden"]) {
+    for (const name of [
+      "team-beta",
+      "default",
+      "team-alpha",
+      "team.prod",
+      "bad.name",
+      "Work_2",
+      "con",
+      "trail.",
+      ".hidden",
+    ]) {
       await mkdir(join(root, name), { recursive: true });
     }
     await writeFile(join(root, "plain-file"), "not a directory");
     await symlink(join(root, "team-beta"), join(root, "linked-profile"));
-    expect(await discoverOmpProfiles(environment)).toEqual(["Work_2", "team-alpha", "team-beta"]);
+    expect(await discoverOmpProfiles(environment)).toEqual([
+      "bad.name",
+      "team-alpha",
+      "team-beta",
+      "team.prod",
+    ]);
   });
 
   test("uses the selected config root and distinguishes an absent directory from an invalid root", async () => {
@@ -120,11 +135,22 @@ describe("profile discovery and provider identity", () => {
     expect(await discoverOmpProfiles(environment)).toEqual(names.slice(0, 128));
   });
 
-  test("requires lowercase aliases without silently case-folding profile identities", () => {
+  test("uses OMP's lowercase profile grammar without case-folding identities", () => {
     expect(profileProviderId("team-beta")).toBe("omp-plugin-team-beta");
-    expect(() => profileProviderId("Work")).toThrow("lowercase profile name");
+    expect(profileProviderId("team.prod")).toBe("omp-plugin-team.prod");
     expect(profileProviderId("work")).toMatch(/^[a-z][a-z0-9._-]*$/u);
-    for (const name of ["default", "", "../escape", ".hidden", "x".repeat(65)]) {
+    for (const name of [
+      "default",
+      "",
+      "../escape",
+      ".hidden",
+      "Work",
+      "trail.",
+      "con",
+      "nul.txt",
+      "com9",
+      "x".repeat(65),
+    ]) {
       expect(() => createProfileOmpProvider(name)).toThrow("Invalid named OMP profile");
     }
     expect(createOmpProvider().id).toBe("omp-plugin");
@@ -174,31 +200,30 @@ describe("fixed profile catalog and runtime", () => {
     expect(source).toEqual(original);
   });
 
-  test("keys discovery by profile, store and workspace without resolving or hashing credentials", async () => {
+  test("keys discovery by effective profile options without hashing credentials", async () => {
     const { environment } = await fixture();
-    const provider = (profile: string, additions: NodeJS.ProcessEnv = {}) =>
-      createProfileOmpProvider(profile, { environment: { ...environment, ...additions } });
-    const key = (
-      profile: ReturnType<typeof provider>,
-      cwd = "/repo",
-      credential = "first-fixture-value",
-    ) =>
-      profile.getCatalogCacheKey?.({
-        scope: "workspace",
-        cwd,
-        providerOptions: { env: { FIXTURE_API_KEY: credential } },
-      });
-    const first = await key(provider("work", { FIXTURE_API_KEY: "first-fixture-value" }));
+    const work = createProfileOmpProvider("work", { environment });
+    const catalogKey = (providerOptions: Readonly<Record<string, unknown>> = {}, cwd = "/repo") =>
+      work.getCatalogCacheKey?.({ scope: "workspace", cwd, providerOptions });
+    const first = await catalogKey({ command: ["omp"] });
+    expect(first).toHaveLength(43);
+    expect(await catalogKey({ command: ["doppler", "--", "omp"] })).not.toBe(first);
+    expect(await catalogKey({ params: { smolModel: "fixture/small" } })).not.toBe(first);
     expect(
-      await key(
-        provider("work", { FIXTURE_API_KEY: "second-fixture-value" }),
-        "/repo",
-        "second-fixture-value",
-      ),
-    ).toBe(first);
-    expect(await key(provider("other"))).not.toBe(first);
-    expect(await key(provider("work", { PI_CONFIG_DIR: "different" }))).not.toBe(first);
-    expect(await key(provider("work"), "/other")).not.toBe(first);
+      await createProfileOmpProvider("other", { environment }).getCatalogCacheKey?.({
+        scope: "workspace",
+        cwd: "/repo",
+      }),
+    ).not.toBe(first);
+    expect(
+      await createProfileOmpProvider("work", {
+        environment: { ...environment, PI_CONFIG_DIR: "different" },
+      }).getCatalogCacheKey?.({ scope: "workspace", cwd: "/repo" }),
+    ).not.toBe(first);
+    expect(await catalogKey({}, "/other")).not.toBe(first);
+    expect(
+      await catalogKey({ env: { FIXTURE_API_KEY: "must-not-enter-cache-identity" } }),
+    ).toBeUndefined();
   });
 
   test("preserves the selected profile's configured session root", async () => {
@@ -217,6 +242,26 @@ describe("fixed profile catalog and runtime", () => {
     expect(fake.starts[0].sessionDir).toBe(join(agentRoot, "recorded-sessions"));
     await connection.close();
   });
+
+  test.skipIf(process.platform === "win32")(
+    "uses an existing profile XDG data root for catalog and session persistence",
+    async () => {
+      const { home, environment } = await fixture();
+      const dataHome = join(home, "xdg-data");
+      const dataRoot = join(dataHome, "omp", "profiles", "work");
+      await mkdir(dataRoot, { recursive: true });
+      const fake = runtimeFixture();
+      const connection = await connect(
+        createProfileOmpProvider("work", {
+          environment: { ...environment, XDG_DATA_HOME: dataHome },
+          runtime: fake.runtime,
+        }),
+      );
+      await request(connection, { type: "catalog", requestId: "xdg-profile" });
+      expect(fake.starts[0].sessionDir).toBe(join(dataRoot, "sessions"));
+      await connection.close();
+    },
+  );
 
   test("preserves trusted wrappers, profile role models and account fallback environment", async () => {
     const { environment } = await fixture();

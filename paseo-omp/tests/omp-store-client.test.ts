@@ -30,6 +30,8 @@ describe("profile store client routing", () => {
       ]).size,
     ).toBe(4);
     expect(storeForProvider("omp-plugin-team-beta")).toEqual({ profile: "team-beta" });
+    expect(storeForProvider("omp-plugin-team.prod")).toEqual({ profile: "team.prod" });
+    expect(storeForProvider("omp-plugin-Work")).toBeUndefined();
     expect(isOmpPluginProvider("omp-plugin-team-beta")).toBe(true);
     expect(isOmpPluginProvider("omp-plugin")).toBe(true);
     expect(isOmpProvider("omp")).toBe(true);

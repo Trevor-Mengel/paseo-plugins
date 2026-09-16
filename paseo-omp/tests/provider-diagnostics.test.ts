@@ -546,6 +546,29 @@ describe("computeOmpProviderHealth", () => {
     expect(OmpProviderHealthSchema.safeParse(health).success).toBe(true);
   });
 
+  test("checks XDG data and session roots independently from profile configuration", async () => {
+    const binaryDir = await tempDir("paseo-omp-bin-");
+    await createFakeBinary(binaryDir);
+    const agentDir = await tempDir("paseo-omp-profile-config-");
+    const dataDir = await tempDir("paseo-omp-profile-data-");
+    const sessionDir = join(dataDir, "sessions");
+    await mkdir(sessionDir);
+    await writeFile(join(agentDir, "config.yml"), "memory:\n  backend: mnemopi\n");
+    await writeFile(join(dataDir, "agent.db"), "");
+    await writeFile(join(dataDir, "history.db"), "");
+
+    const health = await computeOmpProviderHealth(
+      baseDeps(agentDir, binaryDir, { dataDir, sessionDir }),
+    );
+
+    expect(health.roots.agentRootState).toBe("available");
+    expect(health.roots.sessionRootState).toBe("available");
+    expect(health.databases).toEqual({
+      agentDbState: "available",
+      historyDbState: "available",
+    });
+  });
+
   test("reports not-found and never spawns when the binary cannot be resolved", async () => {
     const agentDir = await tempDir("paseo-omp-agent-");
     let spawnCalls = 0;
