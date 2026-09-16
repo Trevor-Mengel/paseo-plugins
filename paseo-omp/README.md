@@ -26,7 +26,7 @@ The plugin uses only public Paseo 0.8 provider contracts and registers distinct 
 
 ## Named OMP profiles
 
-At startup the plugin discovers directory names under `~/.omp/profiles/` (or `PI_CONFIG_DIR`) and registers **OMP · <profile>** for each valid lowercase name. Select that provider when creating a profile-backed agent. Discovery, launch, recovery and persisted session listing share its fixed profile and session root. Matching command wrappers, including Doppler, remain supported; conflicting profile or session-directory overrides fail before launch. Reload the plugin after adding a profile.
+At startup the plugin discovers directory names under `~/.omp/profiles/` (or `PI_CONFIG_DIR`) and registers **OMP · <profile>** for each valid lowercase name. Select that provider when creating a profile-backed agent. Discovery, launch, recovery and persisted session listing share its fixed profile and session root. Matching command wrappers, including Doppler, remain supported; conflicting profile or session-directory overrides fail before launch. Plain `env NAME=value omp` wrappers are supported, but environment-control flags such as `env -i` and `env -u` are rejected because they can discard the selected store. Profile-specific XDG roots cannot be overridden by per-launch environment values. Reload the plugin after adding a profile.
 
 Paseo 0.8 does not pass agent launch options to its model picker. Separate provider identities let the picker request the correct profile catalog before an agent exists. Existing `omp-plugin` and bundled `omp` agents retain their provider; they are not migrated automatically. Profile names use OMP's lowercase grammar, including dotted names such as `team.prod`.
 

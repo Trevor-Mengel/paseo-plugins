@@ -24,6 +24,12 @@ export const OmpStoreSchema = z
       .min(1)
       .max(4096)
       .refine((value) => !value.includes("\0"))
+      // Browser validation accepts absolute paths from any supported server OS;
+      // withOmpStore additionally applies node:path.isAbsolute on the server.
+      .refine(
+        (value) => /^(?:\/|[A-Za-z]:[\\/]|\\)/u.test(value),
+        "OMP agent directory must be absolute",
+      )
       .optional(),
   })
   .strict()
@@ -40,8 +46,8 @@ export const listOmpStores = defineRpc({
 
 export function storeForProvider(provider: string | undefined): OmpStore | undefined {
   if (!provider?.startsWith("omp-plugin-")) return;
-  const parsed = OmpProfileNameSchema.safeParse(provider.slice("omp-plugin-".length));
-  return parsed.success ? { profile: parsed.data } : undefined;
+  const profile = provider.slice("omp-plugin-".length);
+  return isOmpProfileName(profile) ? { profile } : undefined;
 }
 export function storeLabel(store?: OmpStore): string {
   return store?.profile

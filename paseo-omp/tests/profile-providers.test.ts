@@ -99,6 +99,7 @@ describe("profile discovery and provider identity", () => {
       "trail.",
       ".hidden",
     ]) {
+      if (process.platform === "win32" && (name === "con" || name.endsWith("."))) continue;
       await mkdir(join(root, name), { recursive: true });
     }
     await writeFile(join(root, "plain-file"), "not a directory");
@@ -301,10 +302,41 @@ describe("fixed profile catalog and runtime", () => {
   });
 
   test.each([
+    ["env", "FIXTURE=1", "omp"],
+    ["/usr/bin/env", "--", "omp"],
+  ])("preserves a plain env wrapper: %j", async (...command) => {
+    const { environment } = await fixture();
+    const fake = runtimeFixture();
+    const connection = await connect(
+      createProfileOmpProvider("work", { environment, runtime: fake.runtime }),
+    );
+    const event = await request(connection, {
+      type: "catalog",
+      requestId: "plain-env",
+      providerOptions: { command },
+    } as never);
+    expect(event.type).toBe("catalog");
+    expect(fake.starts[0].command).toEqual([...command, "--profile", "work"]);
+    expect(fake.starts[0].environment?.OMP_PROFILE).toBe("work");
+    await connection.close();
+  });
+
+  test.each([
     { command: ["omp", "--profile", "other"] },
     { command: ["omp", "--profile=other"] },
     { command: ["omp", "--profile"] },
     { command: ["env", "OMP_PROFILE=other", "omp"] },
+    { command: ["/usr/bin/env", "-i", "omp"] },
+    { command: ["env", "-", "omp"] },
+    { command: ["env", "-u", "PI_CONFIG_DIR", "omp"] },
+    { command: ["env", "--unset=XDG_DATA_HOME", "omp"] },
+    { command: ["env", "--ignore-environment", "omp"] },
+    { command: ["env", "FIXTURE=1", "-i", "omp"] },
+    { command: ["doppler", "run", "--", "env", "-i", "omp"] },
+    { command: ["env", "XDG_DATA_HOME=/different", "omp"] },
+    { env: { XDG_DATA_HOME: "/different" } },
+    { env: { XDG_STATE_HOME: "/different" } },
+    { env: { XDG_CACHE_HOME: "/different" } },
     { command: ["omp", "--session-dir", "/different"] },
     { params: { sessionDir: "/different" } },
     { env: { OMP_PROFILE: "other" } },
@@ -314,9 +346,14 @@ describe("fixed profile catalog and runtime", () => {
     async (providerOptions) => {
       const { environment } = await fixture();
       const fake = runtimeFixture();
-      const connection = await connect(
-        createProfileOmpProvider("work", { environment, runtime: fake.runtime }),
-      );
+      const provider = createProfileOmpProvider("work", { environment, runtime: fake.runtime });
+      await expect(
+        provider.getCatalogCacheKey({ scope: "global", providerOptions }),
+      ).rejects.toThrow();
+      await expect(
+        provider.checkAvailability({ scope: "global", providerOptions }),
+      ).rejects.toThrow();
+      const connection = await connect(provider);
       const event = await request(connection, {
         type: "catalog",
         requestId: "conflict",

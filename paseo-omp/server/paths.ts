@@ -6,9 +6,13 @@ import { isOmpProfileName, type OmpStore, OmpStoreSchema } from "../shared/omp-s
 
 const MAX_SETTINGS_BYTES = 64 * 1024;
 const storeContext = new AsyncLocalStorage<OmpStore>();
+const ServerOmpStoreSchema = OmpStoreSchema.refine(
+  (store) => !store.agentDir || isAbsolute(store.agentDir),
+  "OMP agent directory must be absolute on the server platform",
+);
 
 export function withOmpStore<T>(store: OmpStore | undefined, operation: () => T): T {
-  return storeContext.run(OmpStoreSchema.parse(store ?? {}), operation);
+  return storeContext.run(ServerOmpStoreSchema.parse(store ?? {}), operation);
 }
 
 /** Per-request selection, never process.env mutation: concurrent profiles stay isolated. */
@@ -29,7 +33,6 @@ export function currentOmpEnvironment(source: NodeJS.ProcessEnv = process.env): 
     delete environment[name];
   if (store.profile) environment.OMP_PROFILE = store.profile;
   else if (store.agentDir) {
-    if (!isAbsolute(store.agentDir)) throw new Error("OMP agent directory must be absolute");
     environment.PI_CODING_AGENT_DIR = store.agentDir;
   }
   return environment;
@@ -55,8 +58,8 @@ function ompProfile(environment: NodeJS.ProcessEnv): string | undefined {
 function defaultOmpAgentDir(environment: NodeJS.ProcessEnv, profile?: string): string {
   const home = environment.HOME ?? environment.USERPROFILE ?? homedir();
   return profile
-    ? join(home, environment.PI_CONFIG_DIR ?? ".omp", "profiles", profile, "agent")
-    : join(home, environment.PI_CONFIG_DIR ?? ".omp", "agent");
+    ? join(home, environment.PI_CONFIG_DIR || ".omp", "profiles", profile, "agent")
+    : join(home, environment.PI_CONFIG_DIR || ".omp", "agent");
 }
 
 function explicitOmpAgentDir(
@@ -66,7 +69,18 @@ function explicitOmpAgentDir(
   const pluginOverride = environment.PASEO_OMP_AGENT_DIR ?? environment.OMP_AGENT_DIR;
   if (pluginOverride) return pluginOverride;
   // OMP deliberately ignores PI_CODING_AGENT_DIR while a named profile is active.
-  return profile ? undefined : environment.PI_CODING_AGENT_DIR;
+  if (profile) return;
+  const override = environment.PI_CODING_AGENT_DIR;
+  const inheritedProfile = environment.PI_PROFILE?.trim();
+  // OMP_PROFILE=""/"default" overrides PI_PROFILE, including an agent path
+  // propagated by the parent profile. Such a path is not a custom default store.
+  if (
+    inheritedProfile &&
+    isOmpProfileName(inheritedProfile) &&
+    override === defaultOmpAgentDir(environment, inheritedProfile)
+  )
+    return;
+  return override ? resolve(override) : undefined;
 }
 
 /** OMP's configuration agent directory. Data/state/cache may use XDG-specific roots. */
@@ -83,7 +97,7 @@ function ompStorageDir(
   const profile = ompProfile(environment);
   const agentDir = ompAgentDir(environment);
   if (
-    explicitOmpAgentDir(environment, profile) ||
+    agentDir !== defaultOmpAgentDir(environment, profile) ||
     (platform !== "linux" && platform !== "darwin")
   ) {
     return agentDir;

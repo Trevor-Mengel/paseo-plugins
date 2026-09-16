@@ -1,7 +1,7 @@
 import { type Dir, opendirSync } from "node:fs";
 import { opendir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { isOmpProfileName } from "../../shared/omp-store";
 import { ompAgentDir, ompCacheDir, ompDataDir, ompSessionDir, ompStateDir } from "../paths";
 import { OmpRpcRuntime, type OmpRuntime, type OmpStartOptions } from "./omp-rpc";
@@ -26,6 +26,9 @@ const PROFILE_OVERRIDE_ENV_NAMES = new Set([
   "PI_CONFIG_DIR",
   "HOME",
   "USERPROFILE",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+  "XDG_CACHE_HOME",
 ]);
 
 function validateProfile(profile: string): void {
@@ -35,7 +38,7 @@ function validateProfile(profile: string): void {
 function profileDirectory(environment: NodeJS.ProcessEnv): string {
   return join(
     environment.HOME ?? environment.USERPROFILE ?? homedir(),
-    environment.PI_CONFIG_DIR ?? ".omp",
+    environment.PI_CONFIG_DIR || ".omp",
     "profiles",
   );
 }
@@ -105,6 +108,18 @@ function profileCommand(
   profile: string,
   sessionDir: string,
 ): readonly string[] {
+  // Environment-control flags can erase or replace the fixed profile/config/XDG
+  // roots before OMP sees --profile. Allow plain assignment wrappers, not env's
+  // -i, -u, -S, -C (or their long forms), including wrappers nested after `--`.
+  for (let index = 0; index < command.length; index += 1) {
+    if (basename(command[index]) !== "env") continue;
+    for (const argument of command.slice(index + 1)) {
+      if (argument === "--") break;
+      if (argument.startsWith("-"))
+        throw new OmpPublicError("OMP profile command cannot alter its environment with env flags");
+      if (!/^[A-Za-z_][A-Za-z0-9_]*=/u.test(argument)) break;
+    }
+  }
   let hasProfile = false;
   for (let index = 1; index < command.length; index += 1) {
     const argument = command[index];
