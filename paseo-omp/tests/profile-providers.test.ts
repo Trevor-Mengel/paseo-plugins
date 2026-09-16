@@ -166,7 +166,7 @@ describe("fixed profile catalog and runtime", () => {
         requestId: `catalog-${profile}`,
         cwd: "/repo",
       });
-      expect(provider.label).toBe(`OMP · ${profile}`);
+      expect(provider.label).toBe(`paseo-omp_custom_0.2.1 · ${profile}`);
       expect(event.type).toBe("catalog");
       if (event.type !== "catalog") throw new Error("expected catalog");
       expect(event.catalog.models[0].metadata).toEqual({ provider: "fixture", modelId: profile });

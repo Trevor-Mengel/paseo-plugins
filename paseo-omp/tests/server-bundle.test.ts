@@ -148,7 +148,7 @@ describe("plugin server bundle", () => {
         }),
       ).toBeUndefined();
       expect(providers).toEqual([
-        expect.objectContaining({ id: "omp-plugin", label: "OMP Plugin" }),
+        expect.objectContaining({ id: "omp-plugin", label: "paseo-omp_custom_0.2.1 · Default" }),
       ]);
       const provider = providers[0];
       if (!provider) throw new Error("Registered provider is missing");

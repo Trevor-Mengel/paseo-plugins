@@ -82,7 +82,7 @@ export function McpPopover(props: PluginButtonContentProps) {
   }
 
   if (unavailable)
-    return <Text style={styles.muted}>MCP controls require an OMP Plugin agent.</Text>;
+    return <Text style={styles.muted}>MCP controls require a paseo-omp_custom_0.2.1 agent.</Text>;
 
   return (
     <View style={styles.root}>

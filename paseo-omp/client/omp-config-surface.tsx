@@ -378,7 +378,7 @@ function DocumentationLink({
 
 function ProviderSetupSection({ styles }: { styles: OmpConfigStyles }) {
   return (
-    <SectionCard styles={styles} title="OMP Plugin">
+    <SectionCard styles={styles} title="paseo-omp_custom_0.2.1">
       <Text style={styles.muted}>
         Launch settings currently come from the active Paseo provider profile.
       </Text>
@@ -399,7 +399,7 @@ function ProviderSetupSection({ styles }: { styles: OmpConfigStyles }) {
 function PluginConfigurationSection({ styles }: { styles: OmpConfigStyles }) {
   return (
     <>
-      <SectionCard styles={styles} title="OMP Plugin launch options">
+      <SectionCard styles={styles} title="paseo-omp_custom_0.2.1 launch options">
         <Text style={styles.muted}>
           Paseo does not expose the effective providerOptions for active launches through the plugin
           API. Configure these values in the provider profile; this tab documents the supported
@@ -1119,7 +1119,9 @@ function OmpConfigContent({
 
   return (
     <ScrollView contentContainerStyle={styles.root}>
-      <Text style={styles.pageTitle}>{cwd ? "Workspace OMP" : "OMP"}</Text>
+      <Text style={styles.pageTitle}>
+        {cwd ? "Workspace paseo-omp_custom_0.2.1" : "paseo-omp_custom_0.2.1"}
+      </Text>
       {cwd ? (
         <Text selectable style={styles.muted}>
           Project-scoped view · {cwd}
