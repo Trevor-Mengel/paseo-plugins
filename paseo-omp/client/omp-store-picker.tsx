@@ -44,6 +44,8 @@ export function OmpStorePicker({
               accessibilityRole="radio"
               accessibilityLabel={storeLabel(choice)}
               accessibilityState={{ checked: selected, disabled }}
+              aria-checked={selected}
+              aria-disabled={disabled}
               disabled={disabled}
               onPress={() => onChange(choice)}
               style={{
