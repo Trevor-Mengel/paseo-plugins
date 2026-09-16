@@ -133,13 +133,14 @@ test("registered RPC handlers carry store selection across asynchronous resolver
   vi.stubEnv("PI_CONFIG_DIR", ".omp");
   vi.stubEnv("PASEO_OMP_AGENT_DIR", "/incorrect-daemon-default");
   const handlers = new Map<string, (input: unknown) => unknown>();
-  const cleanup = await contribute({
+  const cleanup = contribute({
     handle(contract: { name: string }, handler: (input: unknown) => unknown) {
       handlers.set(contract.name, handler);
     },
     before: () => () => {},
     registerProvider: () => {},
   } as unknown as PluginServerContext);
+  expect(typeof cleanup).toBe("function");
   try {
     for (const [agentDir, name] of [
       [alpha, "alpha"],

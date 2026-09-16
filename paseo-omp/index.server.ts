@@ -15,7 +15,11 @@ import {
 import { resolveListOmpSettings, resolveUpdateOmpSettings } from "./server/omp-settings";
 import { withOmpStore } from "./server/paths";
 import { withOmpWorkspaceIdentity } from "./server/provider/host-tools";
-import { createProfileOmpProvider, discoverOmpProfiles } from "./server/provider/profile-providers";
+import {
+  createProfileOmpProvider,
+  discoverOmpProfiles,
+  discoverOmpProfilesSync,
+} from "./server/provider/profile-providers";
 import { createOmpProvider } from "./server/provider/registration";
 import { resolveGetOmpProviderHealth } from "./server/provider-diagnostics";
 import { resolveListOmpQuotas } from "./server/quota";
@@ -40,9 +44,9 @@ function scoped<T extends { store?: OmpStore }, R>(handler: (input: T) => R) {
   return (input: T): R => withOmpStore(input.store, () => handler(input));
 }
 
-export default async function contribute(server: PluginServerContext) {
+export default function contribute(server: PluginServerContext) {
   const browserAuthorizationRegistry = new OmpBrowserAuthorizationRegistry();
-  const profiles = await discoverOmpProfiles();
+  const profiles = discoverOmpProfilesSync();
   server.handle(listOmpStores, async () => ({ profiles: await discoverOmpProfiles() }));
   for (const profile of profiles) {
     if (/[A-Z]/.test(profile)) continue; // Paseo provider IDs are lowercase.

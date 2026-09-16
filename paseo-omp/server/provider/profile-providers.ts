@@ -1,4 +1,4 @@
-import type { Dir } from "node:fs";
+import { type Dir, opendirSync } from "node:fs";
 import { opendir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -40,6 +40,30 @@ function profileDirectory(environment: NodeJS.ProcessEnv): string {
     environment.PI_CONFIG_DIR ?? ".omp",
     "profiles",
   );
+}
+
+/** Paseo 0.8 contribution registration is synchronous; inspect directory names only. */
+export function discoverOmpProfilesSync(environment: NodeJS.ProcessEnv = process.env): string[] {
+  let directory: Dir;
+  try {
+    directory = opendirSync(profileDirectory(environment));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw new OmpPublicError("OMP profile directory could not be read");
+  }
+  const profiles: string[] = [];
+  let count = 0;
+  try {
+    for (let entry = directory.readSync(); entry; entry = directory.readSync()) {
+      if (++count > MAX_DIRECTORY_ENTRIES)
+        throw new OmpPublicError("OMP profile directory is too large");
+      if (entry.isDirectory() && entry.name !== "default" && PROFILE_NAME.test(entry.name))
+        profiles.push(entry.name);
+    }
+  } finally {
+    directory.closeSync();
+  }
+  return profiles.sort().slice(0, MAX_PROFILES);
 }
 
 /** Enumerate names only; never open profile configuration, databases, or credential files. */

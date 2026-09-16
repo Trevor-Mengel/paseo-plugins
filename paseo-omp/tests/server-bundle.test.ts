@@ -95,7 +95,7 @@ describe("plugin server bundle", () => {
       const providers: ProviderRegistration[] = [];
       const handlers: unknown[] = [];
       const beforeHooks: unknown[] = [];
-      const cleanup = await module.default({
+      const cleanup = module.default({
         before: (...args: unknown[]) => {
           beforeHooks.push(args);
           return () => {};
