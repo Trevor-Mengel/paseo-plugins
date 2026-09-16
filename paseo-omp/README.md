@@ -1,6 +1,6 @@
-# Paseo OMP plugin
+# paseo-omp_custom_0.2.1
 
-Community OMP integration for Paseo. The plugin registers the distinct `omp-plugin` provider plus named profile providers and coexists with Paseo's bundled `omp` provider.
+Profile-aware OMP integration for Paseo, maintained as a fork of [omercnet/paseo-plugins](https://github.com/omercnet/paseo-plugins). The plugin registers the distinct `omp-plugin` provider plus named profile providers and coexists with Paseo's bundled `omp` provider.
 
 > **Alpha preview:** persistence and protocol contracts are tested, but upgrades may still require re-importing sessions created by an earlier preview.
 
@@ -9,11 +9,11 @@ Community OMP integration for Paseo. The plugin registers the distinct `omp-plug
 Requirements: Paseo `^0.8.0`, OMP `18.1.15` or newer, and OMP RPC protocol v2.
 
 ```bash
-paseo plugin add omercnet/paseo-plugins:paseo-omp --ref paseo-omp-v<version>
+paseo plugin add Trevor-Mengel/paseo-plugins:paseo-omp --ref <reviewed-commit>
 paseo plugin ls paseo-omp
 ```
 
-Open the **OMP** sidebar to review the provider-profile contract, browse and edit native scalar settings, manage OMP-native plugins, verify runtime health, and inspect storage and process diagnostics. Then create an agent and select **OMP Plugin**. Its **MCP** composer control runs OMP-native management commands in the current session; setup questions and authorization stay in that chat timeline, where OAuth can open in a workspace-scoped Paseo Browser or on the current device. Normal use requires no plugin-specific settings.
+Open the **paseo-omp_custom_0.2.1** sidebar to review the provider-profile contract, browse and edit native scalar settings, manage OMP-native plugins, verify runtime health, and inspect storage and process diagnostics. Then create an agent and select **paseo-omp_custom_0.2.1 · Default** or the named profile you want. Its **MCP** composer control runs OMP-native management commands in the current session; setup questions and authorization stay in that chat timeline, where OAuth can open in a workspace-scoped Paseo Browser or on the current device. Normal use requires no plugin-specific settings.
 
 - [Install, update, rollback, and local development](docs/installation.md)
 - [Configuration and every provider option](docs/configuration.md)
@@ -24,13 +24,15 @@ Open the **OMP** sidebar to review the provider-profile contract, browse and edi
 
 The plugin uses only public Paseo 0.8 provider contracts and registers the distinct `omp-plugin` identity; it does not modify the bundled `omp` provider.
 
+The custom suffix records the upstream package version this fork started from (`0.2.1`). The internal plugin ID remains `paseo-omp`, and provider/RPC identifiers remain stable so existing sessions and saved presets keep working. Paseo 0.8 displays that technical plugin ID in its plugin manager; the sidebar, panels and provider picker use **paseo-omp_custom_0.2.1**.
+
 ## Named OMP profiles
 
-This fork addresses [upstream profile scoping #72](https://github.com/omercnet/paseo-plugins/issues/72). At startup it discovers directory names under `~/.omp/profiles/` (or `PI_CONFIG_DIR`) and registers **OMP · <profile>** for each valid lowercase name. Select that provider when creating a profile-backed agent. Discovery, launch, recovery and persisted session listing share its fixed profile and session root. Matching command wrappers, including Doppler, remain supported; conflicting profile or session-directory overrides fail before launch. Reload the plugin after adding a profile.
+This fork addresses [upstream profile scoping #72](https://github.com/omercnet/paseo-plugins/issues/72). At startup it discovers directory names under `~/.omp/profiles/` (or `PI_CONFIG_DIR`) and registers **paseo-omp_custom_0.2.1 · <profile>** for each valid lowercase name. Select that provider when creating a profile-backed agent. Discovery, launch, recovery and persisted session listing share its fixed profile and session root. Matching command wrappers, including Doppler, remain supported; conflicting profile or session-directory overrides fail before launch. Reload the plugin after adding a profile.
 
 Paseo 0.8 does not pass agent launch options to its model picker. Separate provider identities let the picker request the correct profile catalog before an agent exists. Existing `omp-plugin` and bundled `omp` agents retain their provider; they are not migrated automatically. Mixed-case profile names remain available in auxiliary store selectors, because Paseo requires lowercase provider IDs.
 
-The OMP sidebar and memory panel expose an explicit store selector. Settings, plugins, quota, history, memory and diagnostics use that selection, and profile-agent popovers derive it from the provider ID. Default-provider views are labelled **Daemon default store**; changing `providerOptions.command` on the default provider does not make those views profile-aware. Workspace configuration remains project-scoped, with the selected profile supplying inherited settings. Hub records are daemon-wide. The RPCs also accept an explicit absolute `store.agentDir` for custom stores; it is mutually exclusive with `store.profile`.
+The paseo-omp_custom_0.2.1 sidebar and memory panel expose an explicit store selector. Settings, plugins, quota, history, memory and diagnostics use that selection, and profile-agent popovers derive it from the provider ID. Default-provider views are labelled **Daemon default store**; changing `providerOptions.command` on the default provider does not make those views profile-aware. Workspace configuration remains project-scoped, with the selected profile supplying inherited settings. Hub records are daemon-wide. The RPCs also accept an explicit absolute `store.agentDir` for custom stores; it is mutually exclusive with `store.profile`.
 
 Profile selection is request-local: concurrent clients cannot change each other's process environment or cached results. Settings edits are live; selecting a store does not authorize changing it.
 

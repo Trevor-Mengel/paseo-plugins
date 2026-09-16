@@ -88,7 +88,7 @@ export default function contribute(client: PluginClientContext) {
   });
   const removeWorkspacePanel = client.addWorkspacePanel({
     id: "workspace",
-    title: "OMP",
+    title: "paseo-omp_custom_0.2.1",
     icon: "Settings",
     context: "workspace",
     locations: ["workspace", "explorer"],
@@ -96,7 +96,7 @@ export default function contribute(client: PluginClientContext) {
   });
   const removeOpenWorkspace = client.addCommandCenterItem({
     id: "open-workspace",
-    title: "Open Workspace OMP",
+    title: "Open Workspace paseo-omp_custom_0.2.1",
     icon: "Settings",
     keywords: ["omp", "workspace", "config", "plugins", "diagnostics"],
     context: "workspace",
@@ -107,13 +107,13 @@ export default function contribute(client: PluginClientContext) {
   const removeConfigSurface = client.addSurface("config", OmpConfigSurface);
   const removeConfigSidebarItem = client.addSidebarItem({
     id: "config",
-    title: "OMP",
+    title: "paseo-omp_custom_0.2.1",
     icon: "Settings",
     surface: "config",
   });
   const removeOpenConfig = client.addCommandCenterItem({
     id: "open-config",
-    title: "Open OMP",
+    title: "Open paseo-omp_custom_0.2.1",
     icon: "Settings",
     keywords: ["omp", "config", "settings", "models", "providers"],
     context: "global",

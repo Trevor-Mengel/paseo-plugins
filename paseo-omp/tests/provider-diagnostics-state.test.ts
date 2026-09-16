@@ -165,7 +165,12 @@ describe("selectKnownOmpProviders", () => {
   test("keeps native and plugin OMP ids, including prototype-like ids safely", () => {
     const entries: PaseoProviderSnapshotResult["entries"] = [
       { provider: "omp", status: "ready", enabled: true, label: "OMP" },
-      { provider: "omp-plugin", status: "ready", enabled: true, label: "OMP Plugin" },
+      {
+        provider: "omp-plugin",
+        status: "ready",
+        enabled: true,
+        label: "paseo-omp_custom_0.2.1 · Default",
+      },
       { provider: "omp-plugin-cloutdesk", status: "ready", enabled: true, label: "OMP Cloutdesk" },
       { provider: "omp-plugin-invalid/name", status: "ready", enabled: true },
       { provider: "constructor", status: "ready", enabled: true },
@@ -175,7 +180,12 @@ describe("selectKnownOmpProviders", () => {
 
     expect(selectKnownOmpProviders(entries)).toEqual([
       { id: "omp", label: "OMP", status: "ready", enabled: true },
-      { id: "omp-plugin", label: "OMP Plugin", status: "ready", enabled: true },
+      {
+        id: "omp-plugin",
+        label: "paseo-omp_custom_0.2.1 · Default",
+        status: "ready",
+        enabled: true,
+      },
       { id: "omp-plugin-cloutdesk", label: "OMP Cloutdesk", status: "ready", enabled: true },
     ]);
   });

@@ -226,6 +226,6 @@ export function createProfileOmpProvider(profile: string, options: OmpProviderOp
       );
     },
     id,
-    label: `OMP · ${profile}`,
+    label: `paseo-omp_custom_0.2.1 · ${profile}`,
   };
 }
