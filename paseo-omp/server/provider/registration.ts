@@ -61,6 +61,8 @@ export interface OmpProviderOptions {
   timelineScheduler?: OmpTimelineScheduler;
   replayTimeoutMs?: number;
   environment?: NodeJS.ProcessEnv;
+  /** Fixed, non-secret profile/store identity for providers whose configuration is server-owned. */
+  catalogIdentity?: Readonly<Record<string, string>>;
   mcpInitializationTimeoutMs?: number;
   mcpConnector?: OmpMcpConnector;
   browserAuthorizationRegistry?: OmpBrowserAuthorizationRegistry;
@@ -96,9 +98,13 @@ export function createOmpProvider(options: OmpProviderOptions = {}): ProviderReg
       const identity = {
         scope: catalogOptions.scope,
         ...(catalogOptions.scope === "workspace" ? { cwd: catalogOptions.cwd } : {}),
-        providerOptions,
-        settings: catalogOptions.settings ?? {},
-        defaultCommand: (options.environment ?? process.env).OMP_COMMAND ?? "omp",
+        ...(options.catalogIdentity
+          ? { profile: options.catalogIdentity }
+          : {
+              providerOptions,
+              settings: catalogOptions.settings ?? {},
+              defaultCommand: (options.environment ?? process.env).OMP_COMMAND ?? "omp",
+            }),
       };
       if (
         boundedJsonBytes(identity, 2 * 1024 * 1024, 4_096, 256 * 1024, 16_384) ===
