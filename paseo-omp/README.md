@@ -107,7 +107,7 @@ The plugin validates OMP protocol data and bounds public strings and structured 
 
 `providerOptions.outputRedaction` defaults to `none`, preserving native content subject to those bounds. `configured-values` provides best-effort literal replacement for explicitly supplied credential values and every non-empty daemon value selected through `inheritEnv`, regardless of its name. It does not detect generated secrets or encoded, transformed, or independently streamed fragments of configured values. Centralized Paseo policy is required when a deployment needs redaction guarantees.
 
-Unexpected or internal launch failures use fixed fallback messages rather than serializing the launch configuration. Explicit public validation errors may include caller-supplied configuration names or values. Deployments that require host-wide content redaction should implement it in a dedicated host or plugin layer rather than this protocol adapter.
+Unexpected or internal failures return a generated diagnostic ID. The same ID appears in a server diagnostic with a fixed operation, error class and recognized RPC failure classification. Unknown error messages, names, stacks, causes and launch configuration are never logged. Explicit public validation errors may include caller-supplied configuration names or values. Deployments that require host-wide content redaction should implement it in a dedicated host or plugin layer rather than this protocol adapter.
 
 ## Testing and development
 
