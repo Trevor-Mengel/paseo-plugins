@@ -1,8 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, openSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { type OmpStore, OmpStoreSchema } from "../shared/omp-store";
+import { isOmpProfileName, type OmpStore, OmpStoreSchema } from "../shared/omp-store";
 
 const MAX_SETTINGS_BYTES = 64 * 1024;
 const storeContext = new AsyncLocalStorage<OmpStore>();
@@ -35,20 +35,84 @@ export function currentOmpEnvironment(source: NodeJS.ProcessEnv = process.env): 
   return environment;
 }
 
-/** Root of omp's per-machine agent state (`agent.db`, `history.db`, `memories/`). */
-export function ompAgentDir(environment: NodeJS.ProcessEnv = currentOmpEnvironment()): string {
+type OmpStorageKind = "data" | "state" | "cache";
+
+const XDG_HOME_BY_KIND: Record<OmpStorageKind, string> = {
+  data: "XDG_DATA_HOME",
+  state: "XDG_STATE_HOME",
+  cache: "XDG_CACHE_HOME",
+};
+
+function ompProfile(environment: NodeJS.ProcessEnv): string | undefined {
+  const raw =
+    environment.OMP_PROFILE !== undefined ? environment.OMP_PROFILE : environment.PI_PROFILE;
+  const profile = raw?.trim();
+  if (!profile || profile === "default") return;
+  if (!isOmpProfileName(profile)) throw new Error("Invalid OMP profile name");
+  return profile;
+}
+
+function defaultOmpAgentDir(environment: NodeJS.ProcessEnv, profile?: string): string {
   const home = environment.HOME ?? environment.USERPROFILE ?? homedir();
-  const profile = environment.OMP_PROFILE ?? environment.PI_PROFILE;
-  if (profile && profile !== "default" && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(profile))
-    throw new Error("Invalid OMP profile name");
-  return (
-    environment.PASEO_OMP_AGENT_DIR ??
-    environment.OMP_AGENT_DIR ??
-    environment.PI_CODING_AGENT_DIR ??
-    (profile && profile !== "default"
-      ? resolve(home, environment.PI_CONFIG_DIR ?? ".omp", "profiles", profile, "agent")
-      : resolve(home, environment.PI_CONFIG_DIR ?? ".omp", "agent"))
-  );
+  return profile
+    ? join(home, environment.PI_CONFIG_DIR ?? ".omp", "profiles", profile, "agent")
+    : join(home, environment.PI_CONFIG_DIR ?? ".omp", "agent");
+}
+
+function explicitOmpAgentDir(
+  environment: NodeJS.ProcessEnv,
+  profile: string | undefined,
+): string | undefined {
+  const pluginOverride = environment.PASEO_OMP_AGENT_DIR ?? environment.OMP_AGENT_DIR;
+  if (pluginOverride) return pluginOverride;
+  // OMP deliberately ignores PI_CODING_AGENT_DIR while a named profile is active.
+  return profile ? undefined : environment.PI_CODING_AGENT_DIR;
+}
+
+/** OMP's configuration agent directory. Data/state/cache may use XDG-specific roots. */
+export function ompAgentDir(environment: NodeJS.ProcessEnv = currentOmpEnvironment()): string {
+  const profile = ompProfile(environment);
+  return explicitOmpAgentDir(environment, profile) ?? defaultOmpAgentDir(environment, profile);
+}
+
+function ompStorageDir(
+  kind: OmpStorageKind,
+  environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): string {
+  const profile = ompProfile(environment);
+  const agentDir = ompAgentDir(environment);
+  if (
+    explicitOmpAgentDir(environment, profile) ||
+    (platform !== "linux" && platform !== "darwin")
+  ) {
+    return agentDir;
+  }
+  const xdgHome = environment[XDG_HOME_BY_KIND[kind]];
+  if (!xdgHome) return agentDir;
+  const root = profile ? join(xdgHome, "omp", "profiles", profile) : join(xdgHome, "omp");
+  return existsSync(root) ? root : agentDir;
+}
+
+export function ompDataDir(
+  environment: NodeJS.ProcessEnv = currentOmpEnvironment(),
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return ompStorageDir("data", environment, platform);
+}
+
+export function ompCacheDir(
+  environment: NodeJS.ProcessEnv = currentOmpEnvironment(),
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return ompStorageDir("cache", environment, platform);
+}
+
+export function ompStateDir(
+  environment: NodeJS.ProcessEnv = currentOmpEnvironment(),
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return ompStorageDir("state", environment, platform);
 }
 
 function configuredSessionDir(agentDir: string): string | undefined {
@@ -92,9 +156,12 @@ function configuredSessionDir(agentDir: string): string | undefined {
 }
 
 /** OMP's effective session root, honoring its documented environment and settings precedence. */
-export function ompSessionDir(environment: NodeJS.ProcessEnv = currentOmpEnvironment()): string {
+export function ompSessionDir(
+  environment: NodeJS.ProcessEnv = currentOmpEnvironment(),
+  platform: NodeJS.Platform = process.platform,
+): string {
   const explicit = environment.OMP_SESSION_DIR ?? environment.PI_CODING_AGENT_SESSION_DIR;
   if (explicit) return resolve(explicit);
   const agentDir = ompAgentDir(environment);
-  return configuredSessionDir(agentDir) ?? join(agentDir, "sessions");
+  return configuredSessionDir(agentDir) ?? join(ompDataDir(environment, platform), "sessions");
 }

@@ -2,13 +2,13 @@ import { type Dir, opendirSync } from "node:fs";
 import { opendir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { ompSessionDir } from "../paths";
+import { isOmpProfileName } from "../../shared/omp-store";
+import { ompAgentDir, ompCacheDir, ompDataDir, ompSessionDir, ompStateDir } from "../paths";
 import { OmpRpcRuntime, type OmpRuntime, type OmpStartOptions } from "./omp-rpc";
 import { parseOmpProviderOptions } from "./provider-options";
 import { createOmpProvider, type OmpProviderOptions } from "./registration";
 import { OmpPublicError } from "./security";
 
-const PROFILE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u;
 const MAX_PROFILES = 128;
 const MAX_DIRECTORY_ENTRIES = 4_096;
 const STORE_ENV_NAMES = new Set([
@@ -29,13 +29,11 @@ const PROFILE_OVERRIDE_ENV_NAMES = new Set([
 ]);
 
 function validateProfile(profile: string): void {
-  if (!PROFILE_NAME.test(profile) || profile === "default") {
-    throw new OmpPublicError("Invalid named OMP profile");
-  }
+  if (!isOmpProfileName(profile)) throw new OmpPublicError("Invalid named OMP profile");
 }
 
 function profileDirectory(environment: NodeJS.ProcessEnv): string {
-  return resolve(
+  return join(
     environment.HOME ?? environment.USERPROFILE ?? homedir(),
     environment.PI_CONFIG_DIR ?? ".omp",
     "profiles",
@@ -57,8 +55,7 @@ export function discoverOmpProfilesSync(environment: NodeJS.ProcessEnv = process
     for (let entry = directory.readSync(); entry; entry = directory.readSync()) {
       if (++count > MAX_DIRECTORY_ENTRIES)
         throw new OmpPublicError("OMP profile directory is too large");
-      if (entry.isDirectory() && entry.name !== "default" && PROFILE_NAME.test(entry.name))
-        profiles.push(entry.name);
+      if (entry.isDirectory() && isOmpProfileName(entry.name)) profiles.push(entry.name);
     }
   } finally {
     directory.closeSync();
@@ -83,19 +80,13 @@ export async function discoverOmpProfiles(
     if (++count > MAX_DIRECTORY_ENTRIES) {
       throw new OmpPublicError("OMP profile directory is too large");
     }
-    if (entry.isDirectory() && entry.name !== "default" && PROFILE_NAME.test(entry.name)) {
-      profiles.push(entry.name);
-    }
+    if (entry.isDirectory() && isOmpProfileName(entry.name)) profiles.push(entry.name);
   }
   return profiles.sort().slice(0, MAX_PROFILES);
 }
 
-/** Paseo provider IDs are lowercase; mixed-case stores remain available in store selectors. */
 export function profileProviderId(profile: string): string {
   validateProfile(profile);
-  if (/[A-Z]/u.test(profile)) {
-    throw new OmpPublicError("Registered OMP providers require a lowercase profile name");
-  }
   return `omp-plugin-${profile}`;
 }
 
@@ -189,7 +180,10 @@ export function createProfileOmpProvider(profile: string, options: OmpProviderOp
     environment,
     catalogIdentity: {
       profile,
-      agentRoot: environment.PI_CODING_AGENT_DIR as string,
+      agentRoot: ompAgentDir(environment),
+      dataRoot: ompDataDir(environment),
+      cacheRoot: ompCacheDir(environment),
+      stateRoot: ompStateDir(environment),
       sessionRoot: sessionDir,
     },
   });

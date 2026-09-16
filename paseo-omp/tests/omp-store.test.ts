@@ -7,7 +7,15 @@ import { afterEach, expect, test, vi } from "vitest";
 import contribute from "../index.server";
 import { resolveListOmpMemory } from "../server/memory";
 import { resolveListOmpConfig } from "../server/omp-config";
-import { currentOmpEnvironment, ompAgentDir, ompSessionDir, withOmpStore } from "../server/paths";
+import {
+  currentOmpEnvironment,
+  ompAgentDir,
+  ompCacheDir,
+  ompDataDir,
+  ompSessionDir,
+  ompStateDir,
+  withOmpStore,
+} from "../server/paths";
 import { buildStatefulCommandEnv } from "../server/provider-diagnostics";
 import { resolveListOmpQuotas } from "../server/quota";
 import { resolveListOmpSessions } from "../server/sessions";
@@ -107,9 +115,7 @@ test("a selected profile clears conflicting daemon overrides without mutating it
   };
   withOmpStore({ profile: "team-beta" }, () => {
     const selected = currentOmpEnvironment(source);
-    expect(ompAgentDir(selected)).toBe(
-      resolve("/fixture", ".omp", "profiles", "team-beta", "agent"),
-    );
+    expect(ompAgentDir(selected)).toBe(join("/fixture", ".omp", "profiles", "team-beta", "agent"));
     expect(selected.PI_CONFIG_FILES).toBeUndefined();
     expect(selected.OMP_SESSION_DIR).toBeUndefined();
     const command = buildStatefulCommandEnv(selected);
@@ -119,8 +125,42 @@ test("a selected profile clears conflicting daemon overrides without mutating it
   expect(source.OMP_PROFILE).toBe("wrong");
 });
 
-test("store selection validates ambiguity, traversal and relative directory input", () => {
-  expect(OmpStoreSchema.safeParse({ profile: "../other" }).success).toBe(false);
+test("named profiles follow existing OMP XDG data and state roots", async () => {
+  const home = await mkdtemp(join(tmpdir(), "paseo-profile-xdg-"));
+  temporaryDirectories.push(home);
+  const dataHome = join(home, "data");
+  const stateHome = join(home, "state");
+  const cacheHome = join(home, "cache");
+  const dataRoot = join(dataHome, "omp", "profiles", "team.prod");
+  const stateRoot = join(stateHome, "omp", "profiles", "team.prod");
+  const cacheRoot = join(cacheHome, "omp", "profiles", "team.prod");
+  await Promise.all([
+    mkdir(dataRoot, { recursive: true }),
+    mkdir(stateRoot, { recursive: true }),
+    mkdir(cacheRoot, { recursive: true }),
+  ]);
+  const environment = {
+    HOME: home,
+    OMP_PROFILE: "team.prod",
+    XDG_DATA_HOME: dataHome,
+    XDG_STATE_HOME: stateHome,
+    XDG_CACHE_HOME: cacheHome,
+  };
+  expect(ompAgentDir(environment)).toBe(join(home, ".omp", "profiles", "team.prod", "agent"));
+  expect(ompDataDir(environment, "linux")).toBe(dataRoot);
+  expect(ompStateDir(environment, "linux")).toBe(stateRoot);
+  expect(ompCacheDir(environment, "linux")).toBe(cacheRoot);
+  expect(ompSessionDir(environment, "linux")).toBe(join(dataRoot, "sessions"));
+  expect(ompDataDir(environment, "win32")).toBe(
+    join(home, ".omp", "profiles", "team.prod", "agent"),
+  );
+});
+
+test("store selection validates ambiguity, traversal and invalid profile names", () => {
+  expect(OmpStoreSchema.safeParse({ profile: "team.prod" }).success).toBe(true);
+  for (const profile of ["../other", "Work", "trail.", "con"]) {
+    expect(OmpStoreSchema.safeParse({ profile }).success).toBe(false);
+  }
   expect(OmpStoreSchema.safeParse({ profile: "a", agentDir: "/b" }).success).toBe(false);
   expect(() => withOmpStore({ agentDir: "relative" }, () => ompAgentDir())).toThrow("absolute");
   expect(OmpStoreSchema.parse({})).toEqual({});
