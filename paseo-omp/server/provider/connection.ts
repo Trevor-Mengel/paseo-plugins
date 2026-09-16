@@ -277,26 +277,112 @@ export interface OmpConnectionDiagnostic {
     | "rpc-timeout"
     | "rpc-closed"
     | "rpc-input-failed"
+    | "rpc-exit"
+    | "spawn-not-found"
+    | "spawn-not-runnable"
+    | "spawn-failed"
+    | "system-error"
+    | "database-error"
     | "catalog-empty"
     | "unexpected";
+  stage?: "spawn" | "rpc" | "storage";
+  code?: (typeof SYSTEM_ERROR_CODES)[number] | (typeof DATABASE_ERROR_CODES)[number];
+  exitCode?: number;
+  signal?: (typeof EXIT_SIGNALS)[number];
 }
 
 // Match complete, locally authored messages only. Never log an arbitrary message, error name,
 // stack, cause, request payload, or environment: each can contain credentials or prompt text.
-const KNOWN_FAILURES = new Map<string, OmpConnectionDiagnostic["classification"]>([
-  ["OMP RPC response exceeded command limits", "rpc-response-limit"],
-  ["OMP RPC response is invalid", "rpc-invalid-response"],
-  ["OMP RPC request timed out", "rpc-timeout"],
-  ["OMP RPC process is closed", "rpc-closed"],
-  ["OMP RPC process was closed", "rpc-closed"],
-  ["OMP RPC input channel failed", "rpc-input-failed"],
-  ["OMP reported no available models", "catalog-empty"],
+const KNOWN_FAILURES = new Map<string, Pick<OmpConnectionDiagnostic, "classification" | "stage">>([
+  [
+    "OMP RPC response exceeded command limits",
+    { classification: "rpc-response-limit", stage: "rpc" },
+  ],
+  ["OMP RPC response is invalid", { classification: "rpc-invalid-response", stage: "rpc" }],
+  ["OMP RPC request timed out", { classification: "rpc-timeout", stage: "rpc" }],
+  ["OMP RPC process is closed", { classification: "rpc-closed", stage: "rpc" }],
+  ["OMP RPC process was closed", { classification: "rpc-closed", stage: "rpc" }],
+  ["OMP RPC output channel closed", { classification: "rpc-closed", stage: "rpc" }],
+  ["OMP RPC input channel failed", { classification: "rpc-input-failed", stage: "rpc" }],
+  ["OMP reported no available models", { classification: "catalog-empty", stage: "rpc" }],
+  ["OMP executable was not found", { classification: "spawn-not-found", stage: "spawn" }],
+  ["OMP executable is not runnable", { classification: "spawn-not-runnable", stage: "spawn" }],
+  ["OMP process could not be launched", { classification: "spawn-failed", stage: "spawn" }],
 ]);
+
+// These are diagnostic vocabulary, not patterns: an unrecognized code or signal is never emitted.
+const SYSTEM_ERROR_CODES = [
+  "ENOENT",
+  "EACCES",
+  "EPERM",
+  "ENOTDIR",
+  "EISDIR",
+  "ENOSPC",
+  "EMFILE",
+  "ENFILE",
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "EPIPE",
+  "EIO",
+] as const;
+const DATABASE_ERROR_CODES = [
+  "SQLITE_ERROR",
+  "SQLITE_BUSY",
+  "SQLITE_LOCKED",
+  "SQLITE_CANTOPEN",
+  "SQLITE_CORRUPT",
+  "SQLITE_NOTADB",
+  "SQLITE_READONLY",
+  "SQLITE_FULL",
+  "SQLITE_IOERR",
+  "ERR_SQLITE_ERROR",
+] as const;
+const EXIT_SIGNALS = [
+  "SIGABRT",
+  "SIGALRM",
+  "SIGBUS",
+  "SIGCHLD",
+  "SIGCONT",
+  "SIGFPE",
+  "SIGHUP",
+  "SIGILL",
+  "SIGINT",
+  "SIGIO",
+  "SIGIOT",
+  "SIGKILL",
+  "SIGPIPE",
+  "SIGPOLL",
+  "SIGPROF",
+  "SIGPWR",
+  "SIGQUIT",
+  "SIGSEGV",
+  "SIGSTKFLT",
+  "SIGSTOP",
+  "SIGSYS",
+  "SIGTERM",
+  "SIGTRAP",
+  "SIGTSTP",
+  "SIGTTIN",
+  "SIGTTOU",
+  "SIGUNUSED",
+  "SIGURG",
+  "SIGUSR1",
+  "SIGUSR2",
+  "SIGVTALRM",
+  "SIGWINCH",
+  "SIGXCPU",
+  "SIGXFSZ",
+  "SIGBREAK",
+  "SIGLOST",
+  "SIGINFO",
+  "unknown",
+] as const;
 
 function classifyFailure(
   error: unknown,
-): Pick<OmpConnectionDiagnostic, "errorClass" | "classification"> {
-  return {
+): Omit<OmpConnectionDiagnostic, "diagnosticId" | "operation"> {
+  const result: Omit<OmpConnectionDiagnostic, "diagnosticId" | "operation"> = {
     errorClass:
       error instanceof TypeError
         ? "TypeError"
@@ -309,9 +395,36 @@ function classifyFailure(
               : error instanceof Error
                 ? "Error"
                 : "NonError",
-    classification:
-      error instanceof Error ? (KNOWN_FAILURES.get(error.message) ?? "unexpected") : "unexpected",
+    classification: "unexpected",
   };
+  const message = error instanceof Error ? error.message : undefined;
+  if (typeof message === "string") {
+    const known = KNOWN_FAILURES.get(message);
+    if (known) return { ...result, ...known };
+    const exit = /^OMP RPC process exited \(code (-?(?:0|[1-9]\d{0,9}))\)$/.exec(message);
+    if (exit && exit[0] === message) {
+      const exitCode = Number(exit[1]);
+      if (exitCode >= -2147483648 && exitCode <= 4294967295) {
+        return { ...result, classification: "rpc-exit", stage: "rpc", exitCode };
+      }
+    }
+    const signal = EXIT_SIGNALS.find(
+      (value) => message === `OMP RPC process exited (signal ${value})`,
+    );
+    if (signal) return { ...result, classification: "rpc-exit", stage: "rpc", signal };
+  }
+  // Inspect data properties only; error-code getters may execute arbitrary application code.
+  const code =
+    error && typeof error === "object"
+      ? Object.getOwnPropertyDescriptor(error, "code")?.value
+      : undefined;
+  const systemCode = SYSTEM_ERROR_CODES.find((value) => value === code);
+  if (systemCode) return { ...result, classification: "system-error", code: systemCode };
+  const databaseCode = DATABASE_ERROR_CODES.find((value) => value === code);
+  if (databaseCode) {
+    return { ...result, classification: "database-error", stage: "storage", code: databaseCode };
+  }
+  return result;
 }
 
 type NativeReservation = { owner: symbol; quarantined: boolean };

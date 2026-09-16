@@ -105,7 +105,83 @@ describe("connection failure diagnostics", () => {
     expect(diagnostics[0]).toMatchObject({
       errorClass: "Error",
       classification: "rpc-response-limit",
+      stage: "rpc",
     });
+  });
+
+  test.each([
+    ["OMP executable was not found", "spawn-not-found"],
+    ["OMP executable is not runnable", "spawn-not-runnable"],
+    ["OMP process could not be launched", "spawn-failed"],
+  ])("attributes the safe spawn failure %s", async (message, classification) => {
+    const diagnostics: OmpConnectionDiagnostic[] = [];
+    await failedOpen(new Error(message), (entry) => diagnostics.push(entry));
+    expect(diagnostics[0]).toMatchObject({ classification, stage: "spawn" });
+  });
+
+  test.each([
+    ["code 1", { exitCode: 1 }],
+    ["code 0", { exitCode: 0 }],
+    ["code -1", { exitCode: -1 }],
+    ["code 4294967295", { exitCode: 4294967295 }],
+    ["signal SIGTERM", { signal: "SIGTERM" }],
+    ["signal SIGKILL", { signal: "SIGKILL" }],
+    ["signal unknown", { signal: "unknown" }],
+  ])("extracts only the structured process exit %s", async (detail, fields) => {
+    const diagnostics: OmpConnectionDiagnostic[] = [];
+    await failedOpen(new Error(`OMP RPC process exited (${detail})`), (entry) =>
+      diagnostics.push(entry),
+    );
+    expect(diagnostics[0]).toMatchObject({ classification: "rpc-exit", stage: "rpc", ...fields });
+  });
+
+  test.each([
+    ["ENOENT", "system-error", undefined],
+    ["EACCES", "system-error", undefined],
+    ["EPIPE", "system-error", undefined],
+    ["SQLITE_BUSY", "database-error", "storage"],
+    ["SQLITE_CANTOPEN", "database-error", "storage"],
+  ])("retains only the known error code %s", async (code, classification, stage) => {
+    const diagnostics: OmpConnectionDiagnostic[] = [];
+    const error = Object.assign(new Error("fabricated-error-secret"), { code });
+    error.cause = { code: "fabricated-cause-secret" };
+    const events = await failedOpen(error, (entry) => diagnostics.push(entry));
+    expect(diagnostics[0]).toMatchObject({ classification, code });
+    expect(diagnostics[0]?.stage).toBe(stage);
+    expect(JSON.stringify({ diagnostics, events })).not.toContain("fabricated-");
+  });
+
+  test.each([
+    "OMP executable was not found fabricated-secret",
+    "OMP RPC process exited (code 1) fabricated-secret",
+    "OMP RPC process exited (code 99999999999999999999)",
+    "OMP RPC process exited (code 4294967296)",
+    "OMP RPC process exited (code -2147483649)",
+    "OMP RPC process exited (code 1)\n",
+    "OMP RPC process exited (signal SIGTERM fabricated-secret)",
+    "OMP RPC process exited (signal fabricated-secret)",
+    "fabricated-secret\nOMP RPC process exited (signal SIGTERM)",
+  ])("does not parse arbitrary error text: %s", async (message) => {
+    const diagnostics: OmpConnectionDiagnostic[] = [];
+    const error = Object.assign(new Error(message), { code: "ENOENT fabricated-secret" });
+    const events = await failedOpen(error, (entry) => diagnostics.push(entry));
+    expect(diagnostics[0]).toMatchObject({ classification: "unexpected" });
+    expect(diagnostics[0]).not.toHaveProperty("code");
+    expect(diagnostics[0]).not.toHaveProperty("exitCode");
+    expect(diagnostics[0]).not.toHaveProperty("signal");
+    expect(JSON.stringify({ diagnostics, events })).not.toContain("fabricated-secret");
+  });
+
+  test("does not invoke an error code getter", async () => {
+    const getter = vi.fn(() => {
+      throw new Error("fabricated-secret");
+    });
+    const error = Object.defineProperty(new Error("fabricated-secret"), "code", { get: getter });
+    const diagnostics: OmpConnectionDiagnostic[] = [];
+    const events = await failedOpen(error, (entry) => diagnostics.push(entry));
+    expect(getter).not.toHaveBeenCalled();
+    expect(diagnostics[0]).toMatchObject({ classification: "unexpected" });
+    expect(JSON.stringify({ diagnostics, events })).not.toContain("fabricated-secret");
   });
 
   test("does not classify or forward an arbitrary extension of a known message", async () => {
