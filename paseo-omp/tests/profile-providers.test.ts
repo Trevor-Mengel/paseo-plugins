@@ -331,6 +331,7 @@ describe("fixed profile catalog and runtime", () => {
     { command: ["env", "-u", "PI_CONFIG_DIR", "omp"] },
     { command: ["env", "--unset=XDG_DATA_HOME", "omp"] },
     { command: ["env", "--ignore-environment", "omp"] },
+    { command: ["ENV.EXE", "-i", "omp"] },
     { command: ["env", "FIXTURE=1", "-i", "omp"] },
     { command: ["doppler", "run", "--", "env", "-i", "omp"] },
     { command: ["env", "XDG_DATA_HOME=/different", "omp"] },

@@ -11,25 +11,25 @@ import { OmpPublicError } from "./security";
 
 const MAX_PROFILES = 128;
 const MAX_DIRECTORY_ENTRIES = 4_096;
-const STORE_ENV_NAMES = new Set([
-  "OMP_PROFILE",
-  "PI_PROFILE",
-  "PASEO_OMP_AGENT_DIR",
-  "OMP_AGENT_DIR",
-  "PI_CODING_AGENT_DIR",
-  "OMP_SESSION_DIR",
-  "PI_CODING_AGENT_SESSION_DIR",
-  "PI_CONFIG_FILES",
-]);
-const PROFILE_OVERRIDE_ENV_NAMES = new Set([
+const STORE_ENV_NAMES: Readonly<Record<string, true>> = {
+  OMP_PROFILE: true,
+  PI_PROFILE: true,
+  PASEO_OMP_AGENT_DIR: true,
+  OMP_AGENT_DIR: true,
+  PI_CODING_AGENT_DIR: true,
+  OMP_SESSION_DIR: true,
+  PI_CODING_AGENT_SESSION_DIR: true,
+  PI_CONFIG_FILES: true,
+};
+const PROFILE_OVERRIDE_ENV_NAMES: Readonly<Record<string, true>> = {
   ...STORE_ENV_NAMES,
-  "PI_CONFIG_DIR",
-  "HOME",
-  "USERPROFILE",
-  "XDG_DATA_HOME",
-  "XDG_STATE_HOME",
-  "XDG_CACHE_HOME",
-]);
+  PI_CONFIG_DIR: true,
+  HOME: true,
+  USERPROFILE: true,
+  XDG_DATA_HOME: true,
+  XDG_STATE_HOME: true,
+  XDG_CACHE_HOME: true,
+};
 
 function validateProfile(profile: string): void {
   if (!isOmpProfileName(profile)) throw new OmpPublicError("Invalid named OMP profile");
@@ -96,7 +96,7 @@ export function profileProviderId(profile: string): string {
 function fixedEnvironment(profile: string, source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const environment = { ...source };
   for (const name of Object.keys(environment)) {
-    if (STORE_ENV_NAMES.has(name.toUpperCase())) delete environment[name];
+    if (STORE_ENV_NAMES[name.toUpperCase()]) delete environment[name];
   }
   environment.OMP_PROFILE = profile;
   environment.PI_CODING_AGENT_DIR = join(profileDirectory(source), profile, "agent");
@@ -112,7 +112,8 @@ function profileCommand(
   // roots before OMP sees --profile. Allow plain assignment wrappers, not env's
   // -i, -u, -S, -C (or their long forms), including wrappers nested after `--`.
   for (let index = 0; index < command.length; index += 1) {
-    if (basename(command[index]) !== "env") continue;
+    const executable = basename(command[index]).toLowerCase();
+    if (executable !== "env" && executable !== "env.exe") continue;
     for (const argument of command.slice(index + 1)) {
       if (argument === "--") break;
       if (argument.startsWith("-"))
@@ -124,7 +125,7 @@ function profileCommand(
   for (let index = 1; index < command.length; index += 1) {
     const argument = command[index];
     const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=/u.exec(argument);
-    if (assignment && PROFILE_OVERRIDE_ENV_NAMES.has(assignment[1].toUpperCase())) {
+    if (assignment && PROFILE_OVERRIDE_ENV_NAMES[assignment[1].toUpperCase()]) {
       throw new OmpPublicError("OMP profile command cannot override its selected store");
     }
     if (argument === "--profile" || argument.startsWith("--profile=")) {
@@ -158,7 +159,7 @@ export function createProfileOmpProvider(profile: string, options: OmpProviderOp
   };
   const assertEnvironment = (sessionEnv?: Readonly<Record<string, string>>) => {
     for (const name of Object.keys(sessionEnv ?? {})) {
-      if (PROFILE_OVERRIDE_ENV_NAMES.has(name.toUpperCase())) {
+      if (PROFILE_OVERRIDE_ENV_NAMES[name.toUpperCase()]) {
         throw new OmpPublicError("OMP session environment cannot override its selected profile");
       }
     }
