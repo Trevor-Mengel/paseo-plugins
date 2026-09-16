@@ -17,7 +17,7 @@ import type {
   OmpVersionStatus,
   PathState,
 } from "../shared/provider-diagnostics";
-import { ompAgentDir } from "./paths";
+import { currentOmpEnvironment, ompAgentDir } from "./paths";
 
 const VERSION_TIMEOUT_MS = 3_000;
 const HELP_TIMEOUT_MS = 3_000;
@@ -190,7 +190,11 @@ export async function killWindowsProcessTree(
 
   let child: ProbeChildProcess;
   try {
-    child = spawnFn(taskkillPath, ["/pid", String(pid), "/t", "/f"], buildProbeEnv(process.env));
+    child = spawnFn(
+      taskkillPath,
+      ["/pid", String(pid), "/t", "/f"],
+      buildProbeEnv(currentOmpEnvironment()),
+    );
   } catch {
     return false;
   }
@@ -243,7 +247,7 @@ export function defaultSpawn(
         return killWindowsProcessTree(
           child.pid,
           defaultSpawn,
-          process.env.SystemRoot ?? WINDOWS_DEFAULT_SYSTEM_ROOT,
+          currentOmpEnvironment().SystemRoot ?? WINDOWS_DEFAULT_SYSTEM_ROOT,
           graceMs,
         );
       }
@@ -569,7 +573,7 @@ export async function probeOmpAvailability(options: OmpAvailabilityProbeOptions)
   status: "missing" | "unrunnable" | "incompatible" | "available";
   diagnostic?: string;
 }> {
-  const environment = options.environment ?? process.env;
+  const environment = options.environment ?? currentOmpEnvironment();
   const [command, ...prefixArgs] = options.command;
   const resolvedPath = await resolveExecutablePath(
     command,
@@ -810,31 +814,57 @@ async function computeMcpDiagnostics(agentDir: string): Promise<OmpMcpDiagnostic
 export interface ProcessDiagnosticsFs {
   readdir(path: string): Promise<string[]>;
   lstat(path: string): Promise<Stats>;
+  readMetadata(path: string, maxBytes: number): Promise<BoundedFileRead>;
 }
 
-const processDiagnosticsFs: ProcessDiagnosticsFs = { readdir, lstat };
+const processDiagnosticsFs: ProcessDiagnosticsFs = {
+  readdir,
+  lstat,
+  readMetadata: readBoundedNoSymlinkFile,
+};
+const MAX_PROCESS_METADATA_BYTES = 64 * 1024;
+const MAX_PROCESS_METADATA_ENTRIES = 4_096;
+const ProcessStateSchema = z.object({
+  daemon: z.object({
+    state: z.string().max(32),
+    exitedAt: z.number().finite().nonnegative().nullish(),
+  }),
+});
+const ACTIVE_PROCESS_STATES = new Set(["starting", "running", "ready", "restarting"]);
+const HISTORICAL_PROCESS_STATES = new Set(["exited", "failed", "stopped"]);
 
 /**
- * Counts only regular, non-symlink meta.json entries. Missing/wrong entries are expected and
- * ignored; any other read/stat failure makes the result partial rather than silently hiding it.
+ * Classifies bounded, regular, non-symlink Hub metadata. A recorded active state is not a
+ * liveness check. Historical files remain useful evidence and are never counted as running.
+ * Only aggregate counts leave this reader; metadata arguments, paths and values are discarded.
  */
 export async function computeProcessDiagnostics(
   hubRunRoot: string,
   fs: ProcessDiagnosticsFs = processDiagnosticsFs,
 ): Promise<OmpProcessDiagnostics> {
+  const unavailableCounts = {
+    trackedCount: null,
+    activeCount: null,
+    historicalCount: null,
+    unknownCount: null,
+  };
   let projectHashes: string[];
   try {
     const rootStats = await fs.lstat(hubRunRoot);
     if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
-      return { status: "unavailable", trackedCount: null };
+      return { status: "unavailable", ...unavailableCounts };
     }
     projectHashes = await fs.readdir(hubRunRoot);
   } catch (error) {
-    return { status: isEnoent(error) ? "unavailable" : "unknown", trackedCount: null };
+    return { status: isEnoent(error) ? "unavailable" : "unknown", ...unavailableCounts };
   }
   let trackedCount = 0;
-  let partial = false;
-  for (const hash of projectHashes) {
+  let activeCount = 0;
+  let historicalCount = 0;
+  let unknownCount = 0;
+  let partial = projectHashes.length > MAX_PROCESS_METADATA_ENTRIES;
+  let visitedEntries = 0;
+  for (const hash of projectHashes.slice(0, MAX_PROCESS_METADATA_ENTRIES)) {
     const projectDir = join(hubRunRoot, hash);
     const daemonsDir = join(projectDir, "daemons");
     try {
@@ -855,15 +885,51 @@ export async function computeProcessDiagnostics(
       continue;
     }
     for (const name of daemonNames) {
+      if (++visitedEntries > MAX_PROCESS_METADATA_ENTRIES) {
+        partial = true;
+        break;
+      }
       try {
-        const metaStats = await fs.lstat(join(daemonsDir, name, "meta.json"));
-        if (!metaStats.isSymbolicLink() && metaStats.isFile()) trackedCount += 1;
+        const daemonDir = join(daemonsDir, name);
+        const directoryStats = await fs.lstat(daemonDir);
+        if (directoryStats.isSymbolicLink() || !directoryStats.isDirectory()) continue;
+        const metaPath = join(daemonDir, "meta.json");
+        const metaStats = await fs.lstat(metaPath);
+        if (metaStats.isSymbolicLink() || !metaStats.isFile()) continue;
+        trackedCount += 1;
+        let category: "active" | "historical" | "unknown" = "unknown";
+        try {
+          const file = await fs.readMetadata(metaPath, MAX_PROCESS_METADATA_BYTES);
+          if (file.state === "available") {
+            const parsed = ProcessStateSchema.safeParse(JSON.parse(file.text));
+            if (parsed.success) {
+              const { state, exitedAt } = parsed.data.daemon;
+              if (HISTORICAL_PROCESS_STATES.has(state) || exitedAt != null) category = "historical";
+              else if (ACTIVE_PROCESS_STATES.has(state)) category = "active";
+            }
+          }
+        } catch {
+          // Read/access/parse errors have an honest unknown bucket, never a guessed active state.
+        }
+        if (category === "historical") historicalCount += 1;
+        else if (category === "active") activeCount += 1;
+        else {
+          unknownCount += 1;
+          partial = true;
+        }
       } catch (error) {
         if (!isEnoent(error)) partial = true;
       }
     }
+    if (visitedEntries > MAX_PROCESS_METADATA_ENTRIES) break;
   }
-  return { status: partial ? "partial" : "ok", trackedCount };
+  return {
+    status: partial ? "partial" : "ok",
+    trackedCount,
+    activeCount,
+    historicalCount,
+    unknownCount,
+  };
 }
 
 function homeRelative(path: string, homeDir: string): string | null {
@@ -1019,7 +1085,7 @@ const cachedHealth = new Map<string, { value: OmpProviderHealth; expiresAt: numb
 const inFlightHealth = new Map<string, Promise<OmpProviderHealth>>();
 
 function defaultHubRunRoot(): string {
-  return process.env.PASEO_OMP_RUN_DIR ?? join(homedir(), ".omp", "run", "daemons");
+  return currentOmpEnvironment().PASEO_OMP_RUN_DIR ?? join(homedir(), ".omp", "run", "daemons");
 }
 
 /**
@@ -1033,30 +1099,31 @@ export async function resolveGetOmpProviderHealth(
 ): Promise<OmpProviderHealth> {
   const cwd = input.cwd ?? process.cwd();
   const now = Date.now();
-  const cached = cachedHealth.get(cwd);
+  const key = JSON.stringify([cwd, ompAgentDir()]);
+  const cached = cachedHealth.get(key);
   if (!input.force && cached && cached.expiresAt > now) return cached.value;
-  const inFlight = inFlightHealth.get(cwd);
+  const inFlight = inFlightHealth.get(key);
   if (inFlight) return inFlight;
 
   const computation = computeOmpProviderHealth({
     agentDir: ompAgentDir(),
-    command: process.env.OMP_COMMAND ?? "omp",
-    pathDirs: (process.env.PATH ?? "").split(delimiter),
+    command: currentOmpEnvironment().OMP_COMMAND ?? "omp",
+    pathDirs: (currentOmpEnvironment().PATH ?? "").split(delimiter),
     cwd,
     platform: process.platform,
-    pathExt: process.env.PATHEXT ?? WINDOWS_DEFAULT_PATHEXT,
-    env: process.env,
+    pathExt: currentOmpEnvironment().PATHEXT ?? WINDOWS_DEFAULT_PATHEXT,
+    env: currentOmpEnvironment(),
     spawnFn: defaultSpawn,
     hubRunRoot: defaultHubRunRoot(),
     homeDir: homedir(),
   })
     .then((value) => {
-      cachedHealth.set(cwd, { value, expiresAt: Date.now() + HEALTH_CACHE_TTL_MS });
+      cachedHealth.set(key, { value, expiresAt: Date.now() + HEALTH_CACHE_TTL_MS });
       return value;
     })
     .finally(() => {
-      inFlightHealth.delete(cwd);
+      inFlightHealth.delete(key);
     });
-  inFlightHealth.set(cwd, computation);
+  inFlightHealth.set(key, computation);
   return computation;
 }
