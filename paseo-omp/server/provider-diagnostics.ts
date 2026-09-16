@@ -17,7 +17,7 @@ import type {
   OmpVersionStatus,
   PathState,
 } from "../shared/provider-diagnostics";
-import { ompAgentDir } from "./paths";
+import { currentOmpEnvironment, ompAgentDir } from "./paths";
 
 const VERSION_TIMEOUT_MS = 3_000;
 const HELP_TIMEOUT_MS = 3_000;
@@ -190,7 +190,11 @@ export async function killWindowsProcessTree(
 
   let child: ProbeChildProcess;
   try {
-    child = spawnFn(taskkillPath, ["/pid", String(pid), "/t", "/f"], buildProbeEnv(process.env));
+    child = spawnFn(
+      taskkillPath,
+      ["/pid", String(pid), "/t", "/f"],
+      buildProbeEnv(currentOmpEnvironment()),
+    );
   } catch {
     return false;
   }
@@ -243,7 +247,7 @@ export function defaultSpawn(
         return killWindowsProcessTree(
           child.pid,
           defaultSpawn,
-          process.env.SystemRoot ?? WINDOWS_DEFAULT_SYSTEM_ROOT,
+          currentOmpEnvironment().SystemRoot ?? WINDOWS_DEFAULT_SYSTEM_ROOT,
           graceMs,
         );
       }
@@ -569,7 +573,7 @@ export async function probeOmpAvailability(options: OmpAvailabilityProbeOptions)
   status: "missing" | "unrunnable" | "incompatible" | "available";
   diagnostic?: string;
 }> {
-  const environment = options.environment ?? process.env;
+  const environment = options.environment ?? currentOmpEnvironment();
   const [command, ...prefixArgs] = options.command;
   const resolvedPath = await resolveExecutablePath(
     command,
@@ -1019,7 +1023,7 @@ const cachedHealth = new Map<string, { value: OmpProviderHealth; expiresAt: numb
 const inFlightHealth = new Map<string, Promise<OmpProviderHealth>>();
 
 function defaultHubRunRoot(): string {
-  return process.env.PASEO_OMP_RUN_DIR ?? join(homedir(), ".omp", "run", "daemons");
+  return currentOmpEnvironment().PASEO_OMP_RUN_DIR ?? join(homedir(), ".omp", "run", "daemons");
 }
 
 /**
@@ -1033,30 +1037,31 @@ export async function resolveGetOmpProviderHealth(
 ): Promise<OmpProviderHealth> {
   const cwd = input.cwd ?? process.cwd();
   const now = Date.now();
-  const cached = cachedHealth.get(cwd);
+  const key = JSON.stringify([cwd, ompAgentDir()]);
+  const cached = cachedHealth.get(key);
   if (!input.force && cached && cached.expiresAt > now) return cached.value;
-  const inFlight = inFlightHealth.get(cwd);
+  const inFlight = inFlightHealth.get(key);
   if (inFlight) return inFlight;
 
   const computation = computeOmpProviderHealth({
     agentDir: ompAgentDir(),
-    command: process.env.OMP_COMMAND ?? "omp",
-    pathDirs: (process.env.PATH ?? "").split(delimiter),
+    command: currentOmpEnvironment().OMP_COMMAND ?? "omp",
+    pathDirs: (currentOmpEnvironment().PATH ?? "").split(delimiter),
     cwd,
     platform: process.platform,
-    pathExt: process.env.PATHEXT ?? WINDOWS_DEFAULT_PATHEXT,
-    env: process.env,
+    pathExt: currentOmpEnvironment().PATHEXT ?? WINDOWS_DEFAULT_PATHEXT,
+    env: currentOmpEnvironment(),
     spawnFn: defaultSpawn,
     hubRunRoot: defaultHubRunRoot(),
     homeDir: homedir(),
   })
     .then((value) => {
-      cachedHealth.set(cwd, { value, expiresAt: Date.now() + HEALTH_CACHE_TTL_MS });
+      cachedHealth.set(key, { value, expiresAt: Date.now() + HEALTH_CACHE_TTL_MS });
       return value;
     })
     .finally(() => {
-      inFlightHealth.delete(cwd);
+      inFlightHealth.delete(key);
     });
-  inFlightHealth.set(cwd, computation);
+  inFlightHealth.set(key, computation);
   return computation;
 }
