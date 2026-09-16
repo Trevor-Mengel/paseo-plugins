@@ -56,7 +56,10 @@ export function OmpStorePicker({
                 opacity: disabled ? 0.5 : 1,
               }}
             >
-              <Text style={{ color: selected ? theme.colors.accent : theme.colors.foreground }}>
+              <Text
+                style={{ color: theme.colors.foreground, fontWeight: selected ? "600" : "400" }}
+              >
+                {selected ? "✓ " : ""}
                 {storeLabel(choice)}
               </Text>
             </Pressable>
