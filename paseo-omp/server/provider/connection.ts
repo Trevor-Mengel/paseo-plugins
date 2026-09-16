@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import {
@@ -266,8 +267,51 @@ function validateInputEnvelope(input: unknown): asserts input is ProviderInput {
   }
 }
 
-function errorDetails(error: unknown, fallback: string): { message: string } {
-  return { message: isOmpPublicError(error) ? error.message : fallback };
+export interface OmpConnectionDiagnostic {
+  diagnosticId: string;
+  operation: string;
+  errorClass: "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "Error" | "NonError";
+  classification:
+    | "rpc-response-limit"
+    | "rpc-invalid-response"
+    | "rpc-timeout"
+    | "rpc-closed"
+    | "rpc-input-failed"
+    | "catalog-empty"
+    | "unexpected";
+}
+
+// Match complete, locally authored messages only. Never log an arbitrary message, error name,
+// stack, cause, request payload, or environment: each can contain credentials or prompt text.
+const KNOWN_FAILURES = new Map<string, OmpConnectionDiagnostic["classification"]>([
+  ["OMP RPC response exceeded command limits", "rpc-response-limit"],
+  ["OMP RPC response is invalid", "rpc-invalid-response"],
+  ["OMP RPC request timed out", "rpc-timeout"],
+  ["OMP RPC process is closed", "rpc-closed"],
+  ["OMP RPC process was closed", "rpc-closed"],
+  ["OMP RPC input channel failed", "rpc-input-failed"],
+  ["OMP reported no available models", "catalog-empty"],
+]);
+
+function classifyFailure(
+  error: unknown,
+): Pick<OmpConnectionDiagnostic, "errorClass" | "classification"> {
+  return {
+    errorClass:
+      error instanceof TypeError
+        ? "TypeError"
+        : error instanceof RangeError
+          ? "RangeError"
+          : error instanceof SyntaxError
+            ? "SyntaxError"
+            : error instanceof ReferenceError
+              ? "ReferenceError"
+              : error instanceof Error
+                ? "Error"
+                : "NonError",
+    classification:
+      error instanceof Error ? (KNOWN_FAILURES.get(error.message) ?? "unexpected") : "unexpected",
+  };
 }
 
 type NativeReservation = { owner: symbol; quarantined: boolean };
@@ -497,7 +541,21 @@ export function createOmpConnection(
   mcpInitializationTimeoutMs?: number,
   replayTimeoutMs?: number,
   browserAuthorizationRegistry?: OmpBrowserAuthorizationRegistry,
+  reportDiagnostic: (diagnostic: OmpConnectionDiagnostic) => void = (diagnostic) =>
+    console.error("OMP provider failure", diagnostic),
 ): ProviderConnection {
+  const errorDetails = (error: unknown, fallback: string): { message: string } => {
+    if (isOmpPublicError(error)) return { message: error.message };
+    // The generated ID is the only correlation value we log. It also travels in the public
+    // request failure, avoiding any assumption that a caller-supplied request ID is value-safe.
+    const diagnosticId = randomUUID();
+    try {
+      reportDiagnostic({ diagnosticId, operation: fallback, ...classifyFailure(error) });
+    } catch {
+      // A diagnostic sink must never prevent the request from settling or its cleanup.
+    }
+    return { message: `${fallback} (diagnostic ${diagnosticId})` };
+  };
   const safeCapabilities = [...new Set(capabilities)].filter(
     (capability) =>
       SUPPORTED_CAPABILITIES[capability] &&

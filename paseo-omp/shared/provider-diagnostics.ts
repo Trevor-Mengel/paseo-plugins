@@ -50,9 +50,12 @@ export const OmpProcessDiagnosticsSchema = z.object({
   /** "partial" means a project daemon directory or candidate metadata file could not be
    * inspected; the count reflects only entries whose metadata was confirmed. */
   status: z.enum(["ok", "partial", "unavailable", "unknown"]),
-  /** Count of daemon-supervised process entries tracked under the hub run root; null
-   * unless "ok" or "partial". */
+  /** Metadata file count under the hub run root, never a count of verified live processes. */
   trackedCount: z.number().int().nonnegative().nullable(),
+  /** Counts by recorded state only; optional for compatibility with older plugin hosts. */
+  activeCount: z.number().int().nonnegative().nullable().optional(),
+  historicalCount: z.number().int().nonnegative().nullable().optional(),
+  unknownCount: z.number().int().nonnegative().nullable().optional(),
 });
 export type OmpProcessDiagnostics = z.infer<typeof OmpProcessDiagnosticsSchema>;
 
