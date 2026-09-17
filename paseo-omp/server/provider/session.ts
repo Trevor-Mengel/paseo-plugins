@@ -104,8 +104,14 @@ const MAX_UNCLAIMED_BRANCH_BYTES = 4 * 1024 * 1024;
 // forwarded to the OMP child process.
 const LEGACY_TERMINAL_OWNERSHIP_ENV = "PASEO_OMP_LEGACY_TERMINAL_OWNERSHIP";
 const LEGACY_CORRELATED_USER_OWNERSHIP = "correlated-user";
+// Fork-only (Trevor-Mengel/paseo-plugins, not proposed upstream): the mode is ON when the
+// variable is unset or empty, because a desktop-launched Paseo daemon cannot be given a new
+// environment without restarting every running agent. Any other value, e.g. "keyed-only",
+// restores upstream's keyed-only default.
 function legacyTerminalOwnershipEnabled(environment: NodeJS.ProcessEnv): boolean {
-  return environment[LEGACY_TERMINAL_OWNERSHIP_ENV] === LEGACY_CORRELATED_USER_OWNERSHIP;
+  const mode = environment[LEGACY_TERMINAL_OWNERSHIP_ENV];
+  if (mode === undefined || mode === "") return true;
+  return mode === LEGACY_CORRELATED_USER_OWNERSHIP;
 }
 class OmpCatalogEscape extends OmpPublicError {}
 const MAX_REPLAY_MESSAGES = 100_000;

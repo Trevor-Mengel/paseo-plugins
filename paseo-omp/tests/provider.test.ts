@@ -144,6 +144,9 @@ const TEST_RUNTIME_ENV: NodeJS.ProcessEnv = {
   PATH: "/usr/bin",
   PI_CODING_AGENT_DIR: "/__paseo_omp_test_no_agent_dir__",
   PI_CONFIG_DIR: ".omp-no-config",
+  // Fork-only: the suite keeps exercising upstream's keyed-only default; the fork's
+  // unset-means-on default has its own test below.
+  PASEO_OMP_LEGACY_TERMINAL_OWNERSHIP: "keyed-only",
 };
 const THINKING_LEVELS: Readonly<Record<string, true>> = {
   high: true,
@@ -11651,6 +11654,49 @@ describe("OMP direct provider", () => {
     );
     expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
     await connection.close();
+  });
+
+  test("fork default: an unset ownership variable completes a correlated unkeyed later turn", async () => {
+    const { PASEO_OMP_LEGACY_TERMINAL_OWNERSHIP: _mode, ...unsetEnvironment } = TEST_RUNTIME_ENV;
+    const { connection, events, runtime, scheduler } = await createHarness(
+      new FakeOmpRuntime(),
+      new ManualScheduler(),
+      undefined,
+      undefined,
+      unsetEnvironment,
+    );
+    onTestFinished(() => connection.close());
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const firstTurn = turnIdFrom(await startPrompt(connection, events, "fork-unset-a", "first"));
+    session.emit({
+      type: "message_end",
+      message: { role: "user", content: "first", entryId: "fork-unset-entry-1" },
+    });
+    await finishTurn(events, session, firstTurn);
+
+    session.promptAgentInvoked = undefined;
+    const secondTurn = turnIdFrom(await startPrompt(connection, events, "fork-unset-b", "second"));
+    session.emit({
+      type: "message_end",
+      message: { role: "user", content: "second", entryId: "fork-unset-entry-2" },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    session.emit({
+      type: "message_end",
+      message: { role: "assistant", content: "second output", stopReason: "stop" },
+    });
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await scheduler.flush(2_000);
+
+    expect(
+      await events.waitFor(
+        (event) =>
+          event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
+      ),
+    ).toEqual(expect.objectContaining({ state: "completed" }));
+    expect(session.closes).toBe(0);
   });
 
   test("fails a correlated unkeyed later turn closed without the legacy opt-in", async () => {
