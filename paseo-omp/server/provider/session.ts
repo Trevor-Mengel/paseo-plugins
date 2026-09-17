@@ -98,6 +98,15 @@ const MAX_BUFFERED_TURN_BYTES = 4 * 1024 * 1024;
 const MAX_USER_ECHO_BYTES = 2 * 1024 * 1024;
 const MAX_PENDING_USER_BYTES = 2 * 1024 * 1024;
 const MAX_UNCLAIMED_BRANCH_BYTES = 4 * 1024 * 1024;
+// Operator escape hatch for OMP releases that never key a terminal `agent_end` with the
+// request that produced it. Off unless the provider environment names this exact mode; any
+// other value, including a truthy one, leaves the keyed-only default in place. It is never
+// forwarded to the OMP child process.
+const LEGACY_TERMINAL_OWNERSHIP_ENV = "PASEO_OMP_LEGACY_TERMINAL_OWNERSHIP";
+const LEGACY_CORRELATED_USER_OWNERSHIP = "correlated-user";
+function legacyTerminalOwnershipEnabled(environment: NodeJS.ProcessEnv): boolean {
+  return environment[LEGACY_TERMINAL_OWNERSHIP_ENV] === LEGACY_CORRELATED_USER_OWNERSHIP;
+}
 class OmpCatalogEscape extends OmpPublicError {}
 const MAX_REPLAY_MESSAGES = 100_000;
 const REPLAY_TIMEOUT_MS = 20_000;
@@ -247,6 +256,7 @@ type ActiveTurn = {
   acknowledged: boolean;
   terminalOwnershipEvidence: boolean;
   terminalOwnershipRequired: boolean;
+  terminalOwnershipRejected: boolean;
   replayingBufferedEvents: boolean;
   bufferedTerminalOwnershipEvidence: boolean;
   agentInvoked?: boolean;
@@ -810,6 +820,7 @@ function createActiveTurn(
     activitySequence: 0,
     acknowledged: false,
     terminalOwnershipEvidence: false,
+    terminalOwnershipRejected: false,
     replayingBufferedEvents: false,
     bufferedTerminalOwnershipEvidence: false,
     terminalOwnershipRequired,
@@ -918,6 +929,7 @@ export class OmpProviderSession {
     private readonly quarantineRewindCleanup: RewindCleanupQuarantine,
     private readonly retireRewindSession: RewindSessionRetirement,
     scheduler: OmpTimelineScheduler = defaultOmpTimelineScheduler,
+    private readonly legacyTerminalOwnership = false,
   ) {
     this.id = id;
     this.cwd = config.cwd;
@@ -1163,6 +1175,7 @@ export class OmpProviderSession {
         quarantineRewindCleanup,
         retireRewindSession,
         scheduler,
+        legacyTerminalOwnershipEnabled(environment ?? process.env),
       );
 
       if (bootstrapConfigRevision !== reconciledConfigRevision) {
@@ -3287,6 +3300,7 @@ export class OmpProviderSession {
         !turn.terminalOwnershipEvidence &&
         !(turn.replayingBufferedEvents && turn.bufferedTerminalOwnershipEvidence)
       ) {
+        turn.terminalOwnershipRejected = true;
         this.scheduleTerminalOwnershipTimeout(turn);
         return;
       }
@@ -3386,8 +3400,10 @@ export class OmpProviderSession {
         return;
       }
       let resolvedId = entryId ?? this.claimUnclaimedBranchEntry(turn, pending.text);
+      let claimedFromBranch = resolvedId !== undefined && resolvedId !== entryId;
       if (!resolvedId && (await this.refreshBranchEntries(turn, pending))) {
         resolvedId = this.claimUnclaimedBranchEntry(turn, pending.text);
+        claimedFromBranch = resolvedId !== undefined;
       }
       if (
         this.closed ||
@@ -3400,7 +3416,7 @@ export class OmpProviderSession {
       turn.userEchoes.shift();
       if (!resolvedId) return;
       turn.pendingUsers.shift();
-      this.publishCorrelatedUser(turn, pending, resolvedId);
+      this.publishCorrelatedUser(turn, pending, resolvedId, claimedFromBranch);
     }
   }
   private async refreshBranchEntries(turn: ActiveTurn, pending: PendingUser): Promise<boolean> {
@@ -4266,9 +4282,23 @@ export class OmpProviderSession {
     return this.slashCommands.has(commandName);
   }
 
-  private publishCorrelatedUser(turn: ActiveTurn, pending: PendingUser, entryId?: string): void {
+  private publishCorrelatedUser(
+    turn: ActiveTurn,
+    pending: PendingUser,
+    entryId?: string,
+    claimedFromBranch = false,
+  ): void {
     if (entryId) {
       if (this.emittedEntryIds.has(entryId)) return;
+      const unclaimedIndex = this.unclaimedBranchEntries.findIndex(
+        (entry) => entry.entryId === entryId,
+      );
+      // A claimed entry, an entry a refresh reported unseen, and a live ID the watermark has
+      // never held are each new relative to a VALID watermark. That is the only user evidence
+      // the legacy mode accepts; an invalid watermark proves nothing about this runtime.
+      const newBranchEntry =
+        this.branchWatermarkValid &&
+        (claimedFromBranch || unclaimedIndex >= 0 || !this.branchEntryIds.has(entryId));
       this.seenEntryIds.add(entryId);
       this.emittedEntryIds.add(entryId);
       if (!turn.terminalOwnershipRequired) this.markTerminalOwnershipEvidence(turn);
@@ -4277,9 +4307,18 @@ export class OmpProviderSession {
           this.quarantineBranchEntries();
         else this.branchEntryIds.add(entryId);
       }
-      const unclaimedIndex = this.unclaimedBranchEntries.findIndex(
-        (entry) => entry.entryId === entryId,
-      );
+      if (
+        turn.terminalOwnershipRequired &&
+        this.legacyTerminalOwnership &&
+        newBranchEntry &&
+        this.branchWatermarkValid &&
+        // A terminal frame already refused for missing ownership stays refused: evidence that
+        // arrives after an agent_end can never reach back and authorize it.
+        !turn.terminalOwnershipRejected
+      ) {
+        if (turn.replayingBufferedEvents) turn.bufferedTerminalOwnershipEvidence = true;
+        else this.markTerminalOwnershipEvidence(turn);
+      }
       if (unclaimedIndex >= 0) this.unclaimedBranchEntries.splice(unclaimedIndex, 1);
     }
     this.projector.publishUser(pending.text, pending.clientMessageId, entryId);
@@ -4512,6 +4551,7 @@ export class OmpProviderSession {
         turn.agentEndPending = false;
         turn.terminalizing = false;
         turn.deferredAgentEnd = undefined;
+        turn.terminalOwnershipRejected = true;
         this.scheduleTerminalOwnershipTimeout(turn);
         return;
       }

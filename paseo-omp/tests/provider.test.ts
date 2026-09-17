@@ -931,11 +931,12 @@ async function createHarness(
     "permission",
   ],
   replayTimeoutMs?: number,
+  environment: NodeJS.ProcessEnv = TEST_RUNTIME_ENV,
 ) {
   const connection = await createOmpProvider({
     runtime,
     timelineScheduler: scheduler,
-    environment: TEST_RUNTIME_ENV,
+    environment,
     replayTimeoutMs,
   }).connect({ versions: [1], capabilities });
   const events = new EventLog();
@@ -1119,6 +1120,13 @@ function turnIdFrom(result: ProviderEvent): string {
     throw new Error("Expected turn prompt result");
   }
   return result.result.turnId;
+}
+
+function createLegacyOwnershipHarness(mode = "correlated-user") {
+  return createHarness(new FakeOmpRuntime(), new ManualScheduler(), undefined, undefined, {
+    ...TEST_RUNTIME_ENV,
+    PASEO_OMP_LEGACY_TERMINAL_OWNERSHIP: mode,
+  });
 }
 
 function establishTerminalOwnership(session: FakeOmpSession): void {
@@ -11644,6 +11652,281 @@ describe("OMP direct provider", () => {
     expect(terminal).toEqual(expect.objectContaining({ state: "completed" }));
     await connection.close();
   });
+
+  test("fails a correlated unkeyed later turn closed without the legacy opt-in", async () => {
+    const { connection, events, runtime, scheduler } = await createHarness();
+    onTestFinished(() => connection.close());
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const firstTurn = turnIdFrom(await startPrompt(connection, events, "legacy-off-a", "first"));
+    session.emit({
+      type: "message_end",
+      message: { role: "user", content: "first", entryId: "legacy-off-entry-1" },
+    });
+    await finishTurn(events, session, firstTurn);
+
+    session.promptAgentInvoked = undefined;
+    const secondTurn = turnIdFrom(await startPrompt(connection, events, "legacy-off-b", "second"));
+    session.emit({
+      type: "message_end",
+      message: { role: "user", content: "second", entryId: "legacy-off-entry-2" },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    session.emit({
+      type: "message_end",
+      message: { role: "assistant", content: "second output", stopReason: "stop" },
+    });
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await scheduler.flush(2_000);
+
+    expect(
+      await events.waitFor(
+        (event) =>
+          event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
+      ),
+    ).toEqual(expect.objectContaining({ state: "failed" }));
+    expect(session.closes).toBe(1);
+  });
+
+  test("completes later unkeyed turns from a new branch entry in legacy ownership mode", async () => {
+    const { connection, events, runtime, scheduler } = await createLegacyOwnershipHarness();
+    onTestFinished(() => connection.close());
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const firstTurn = turnIdFrom(await startPrompt(connection, events, "legacy-on-a", "first"));
+    session.emit({
+      type: "message_end",
+      message: { role: "user", content: "first", entryId: "legacy-on-entry-1" },
+    });
+    await finishTurn(events, session, firstTurn);
+
+    session.promptAgentInvoked = undefined;
+    for (const step of [2, 3]) {
+      const turnId = turnIdFrom(
+        await startPrompt(connection, events, `legacy-on-${step}`, `prompt ${step}`),
+      );
+      session.emit({
+        type: "message_end",
+        message: { role: "user", content: `prompt ${step}`, entryId: `legacy-on-entry-${step}` },
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      session.emit({
+        type: "message_end",
+        message: { role: "assistant", content: `output ${step}`, stopReason: "stop" },
+      });
+      session.emit({ type: "agent_end", messages: [], isTerminal: true });
+      expect(
+        await events.waitFor(
+          (event) =>
+            event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+        ),
+      ).toEqual(expect.objectContaining({ state: "completed" }));
+      await scheduler.flush(2_000);
+      expect(
+        events.filter(
+          (event) =>
+            event.type === "session.turn" && event.turnId === turnId && event.state !== "started",
+        ),
+      ).toHaveLength(1);
+      expect(
+        events.filter(
+          (event) =>
+            event.type === "timeline.item" &&
+            event.item.type === "user_message" &&
+            event.item.clientMessageId === `legacy-on-${step}`,
+        ),
+      ).toHaveLength(1);
+    }
+    expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
+    expect(runtime.starts).toHaveLength(1);
+    expect(session.closes).toBe(0);
+  });
+
+  test("refuses a stale unkeyed terminal that precedes the legacy user evidence", async () => {
+    const { connection, events, runtime, scheduler } = await createLegacyOwnershipHarness();
+    onTestFinished(() => connection.close());
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const firstTurn = turnIdFrom(await startPrompt(connection, events, "legacy-stale-a", "first"));
+    session.emit({
+      type: "message_end",
+      message: { role: "user", content: "first", entryId: "legacy-stale-entry-1" },
+    });
+    await finishTurn(events, session, firstTurn);
+
+    session.promptAgentInvoked = undefined;
+    const secondTurn = turnIdFrom(
+      await startPrompt(connection, events, "legacy-stale-b", "second"),
+    );
+    session.emit({
+      type: "agent_end",
+      messages: [{ role: "assistant", content: "stale", stopReason: "error" }],
+      isTerminal: true,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    session.emit({
+      type: "message_end",
+      message: { role: "user", content: "second", entryId: "legacy-stale-entry-2" },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    // The echo is correlated and published; only the terminal evidence is refused.
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "user_message" &&
+          event.item.clientMessageId === "legacy-stale-b",
+      ),
+    ).toHaveLength(1);
+    expect(
+      events.filter((event) => event.type === "session.turn" && event.turnId === secondTurn),
+    ).toEqual([expect.objectContaining({ state: "started" })]);
+
+    await scheduler.flush(2_000);
+    expect(
+      await events.waitFor(
+        (event) =>
+          event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
+      ),
+    ).toEqual(expect.objectContaining({ state: "failed" }));
+    expect(session.closes).toBe(1);
+  });
+
+  test("refuses legacy user evidence while the branch watermark is invalid", async () => {
+    const { connection, events, runtime, scheduler } = await createLegacyOwnershipHarness();
+    onTestFinished(() => connection.close());
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const firstTurn = turnIdFrom(
+      await startPrompt(connection, events, "legacy-invalid-a", "first"),
+    );
+    session.branchMessagesError = new Error("unavailable");
+    session.emit({ type: "message_end", message: { role: "user", content: "first" } });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await finishTurn(events, session, firstTurn);
+
+    // The pre-prompt watermark refresh fails too, so the second turn starts unwatermarked.
+    session.promptAgentInvoked = undefined;
+    const secondTurn = turnIdFrom(
+      await startPrompt(connection, events, "legacy-invalid-b", "second"),
+    );
+    session.branchMessagesError = null;
+    session.emit({
+      type: "message_end",
+      message: { role: "user", content: "second", entryId: "legacy-invalid-entry-2" },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    // The echo is correlated and published; only the terminal evidence is refused.
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "user_message" &&
+          event.item.clientMessageId === "legacy-invalid-b",
+      ),
+    ).toHaveLength(1);
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await scheduler.flush(2_000);
+
+    expect(
+      await events.waitFor(
+        (event) =>
+          event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
+      ),
+    ).toEqual(expect.objectContaining({ state: "failed" }));
+    expect(session.closes).toBe(1);
+  });
+
+  test("accepts legacy user evidence once the branch watermark is revalidated", async () => {
+    const { connection, events, runtime } = await createLegacyOwnershipHarness();
+    onTestFinished(() => connection.close());
+    await openSession(connection, events);
+    const session = sessionAt(runtime);
+    const firstTurn = turnIdFrom(
+      await startPrompt(connection, events, "legacy-revalidate-a", "first"),
+    );
+    session.branchMessagesError = new Error("unavailable");
+    session.emit({ type: "message_end", message: { role: "user", content: "first" } });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    session.branchMessagesError = null;
+    await finishTurn(events, session, firstTurn);
+
+    session.promptAgentInvoked = undefined;
+    const secondTurn = turnIdFrom(
+      await startPrompt(connection, events, "legacy-revalidate-b", "second"),
+    );
+    session.branchMessages = [{ entryId: "legacy-revalidate-known", text: "first" }];
+    session.emit({ type: "message_end", message: { role: "user", content: "second" } });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "timeline.item" &&
+          event.item.type === "user_message" &&
+          event.item.clientMessageId === "legacy-revalidate-b",
+      ),
+    ).toEqual([]);
+
+    session.branchMessages.push({ entryId: "legacy-revalidate-current", text: "second" });
+    session.emit({ type: "message_end", message: { role: "user", content: "second" } });
+    await events.waitFor(
+      (event) =>
+        event.type === "timeline.item" &&
+        event.item.type === "user_message" &&
+        event.item.clientMessageId === "legacy-revalidate-b",
+    );
+    session.emit({ type: "agent_end", messages: [], isTerminal: true });
+
+    expect(
+      await events.waitFor(
+        (event) =>
+          event.type === "session.turn" && event.turnId === secondTurn && event.state !== "started",
+      ),
+    ).toEqual(expect.objectContaining({ state: "completed" }));
+    expect(events.some((event) => event.type === "session.runtime_failed")).toBe(false);
+  });
+
+  test.each(["1", "true", "correlated-user-mode"])(
+    "ignores the unrecognized legacy ownership value %s",
+    async (mode) => {
+      const { connection, events, runtime, scheduler } = await createLegacyOwnershipHarness(mode);
+      onTestFinished(() => connection.close());
+      await openSession(connection, events);
+      const session = sessionAt(runtime);
+      const firstTurn = turnIdFrom(
+        await startPrompt(connection, events, "legacy-unknown-a", "first"),
+      );
+      session.emit({
+        type: "message_end",
+        message: { role: "user", content: "first", entryId: "legacy-unknown-entry-1" },
+      });
+      await finishTurn(events, session, firstTurn);
+
+      session.promptAgentInvoked = undefined;
+      const secondTurn = turnIdFrom(
+        await startPrompt(connection, events, "legacy-unknown-b", "second"),
+      );
+      session.emit({
+        type: "message_end",
+        message: { role: "user", content: "second", entryId: "legacy-unknown-entry-2" },
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      session.emit({ type: "agent_end", messages: [], isTerminal: true });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await scheduler.flush(2_000);
+
+      expect(
+        await events.waitFor(
+          (event) =>
+            event.type === "session.turn" &&
+            event.turnId === secondTurn &&
+            event.state !== "started",
+        ),
+      ).toEqual(expect.objectContaining({ state: "failed" }));
+    },
+  );
 
   test("fails an EPIPE turn once without terminalizing the host session", async () => {
     const { connection, events, runtime } = await createHarness();
