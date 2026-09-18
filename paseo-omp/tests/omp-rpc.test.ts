@@ -2196,6 +2196,16 @@ describe("OMP RPC transport", () => {
     expect(request.env.node_options).toBeUndefined();
     // The legacy terminal-ownership switch is a plugin-side provider option, never a child value.
     expect(request.env.PASEO_OMP_LEGACY_TERMINAL_OWNERSHIP).toBeUndefined();
+    expect(() =>
+      buildOmpSpawnRequest(
+        {
+          cwd: "/repo",
+          mode: "full",
+          env: { PASEO_OMP_LEGACY_TERMINAL_OWNERSHIP: "correlated-user" },
+        },
+        TEST_RUNTIME_ENV,
+      ),
+    ).toThrow("forbidden variable");
     const benignShortValues = buildOmpSpawnRequest(
       { cwd: "/repo", mode: "full", env: { DEBUG: "1", NODE_ENV: "dev" } },
       TEST_RUNTIME_ENV,
@@ -2354,7 +2364,12 @@ describe("OMP RPC transport", () => {
         { ...TEST_RUNTIME_ENV, OVERSIZED_VALUE: "x".repeat(64 * 1024 + 1) },
       ),
     ).toThrow("invalid value");
-    for (const name of ["NODE_OPTIONS", "node_options", "PaTh"]) {
+    for (const name of [
+      "NODE_OPTIONS",
+      "node_options",
+      "PaTh",
+      "PASEO_OMP_LEGACY_TERMINAL_OWNERSHIP",
+    ]) {
       expect(() =>
         buildOmpSpawnRequest(
           { cwd: "/repo", mode: "full", inheritEnv: [name] },

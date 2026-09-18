@@ -26,21 +26,22 @@ Do not put credentials, private repository paths, session transcripts, or unreda
 `PASEO_OMP_LEGACY_TERMINAL_OWNERSHIP=correlated-user` in the daemon environment that loads the
 plugin relaxes the later-turn ownership guard for operators pinned to an OMP release that never
 keys `agent_end` with its originating request. It is **off by default**, any other value
-(including `1` or `true`) leaves it off, it is read per session when the session opens, and it is
-never forwarded into the OMP child process.
+(including `1` or `true`) leaves it off, and it is read per session when the session opens. The
+variable is provider-only: automatic inheritance drops it, and session `env` or `inheritEnv`
+configuration that tries to forward it to the OMP child is rejected.
 
 With the mode on, and only for a turn that already requires terminal ownership, one extra
-evidence source is accepted: the active prompt's own user entry correlated to a branch entry ID
-that is new relative to a **valid** branch watermark. Nothing else changes — the keyed
+evidence source is accepted: an exact-text user echo for the active prompt correlated to a branch
+entry ID that is new relative to a **valid** branch watermark. Nothing else changes: the keyed
 `requestId` path, the ownership deadline, the runtime-invalidation behavior, and every bound on
-branch history are untouched. Evidence is still refused when the watermark is invalid, when the
-user entry cannot be correlated, and when a terminal frame has already been rejected for this
-turn, so a terminal event that arrives *before* the prompt's user entry can never be authorized
-retroactively.
+branch history are untouched. Evidence is still refused when the watermark is invalid or the
+user entry cannot be correlated. A terminal can wait for correlation already started by a
+matching user echo observed before it, but a user echo first observed after the terminal can
+never authorize that terminal retroactively.
 
 The residual risk it re-accepts is the one that existed before the guard: a terminal event that
-arrives *after* the active prompt's user entry is correlated is attributed to the active turn,
-even though nothing proves the runtime produced it for that prompt. An idle runtime or an
+arrives after the active prompt's matching user echo is observed is attributed to the active
+turn, even though nothing proves the runtime produced it for that prompt. An idle runtime or an
 unrelated agent can therefore finish the turn early with an outcome the plugin cannot
 authenticate. Leave the mode off unless multi-prompt runtimes are otherwise unusable, and remove
 it once the runtime keys `agent_end`: the keyed path needs no escape hatch.
@@ -51,7 +52,7 @@ it once the runtime keys `agent_end`: the keyed path needs no escape hatch.
 - Do not open the same underlying OMP session concurrently through both providers. Reservation tracking is provider-local and cannot coordinate ownership with Paseo's bundled adapter.
 - OMP 18.1.15 does not advertise typed tool approvals. The plugin uses its bounded generic permission fallback until both peers negotiate `typedToolApprovals: 1`.
 - OMP releases that do not correlate ordinary `prompt` requests with their terminal `agent_end` remain limited on ownership-sensitive later turns: the immediate response may omit `agentInvoked: true`, legacy `prompt_result` reports only local-only `false` results, and live user messages may omit their persisted `entryId`. Branch history can correlate user timeline entries, but even a new exact-text entry cannot authenticate a terminal event or its success/error outcome. The plugin accepts a later-turn terminal carrying the matching RPC `requestId`; without that identity, it rejects the event and fails the turn closed after the ownership deadline. An unavailable state or history lookup cannot bypass that guard. [Legacy terminal ownership](#legacy-terminal-ownership-opt-in) is the opt-in, off-by-default escape hatch for runtimes stuck without request identity.
-- Timeline correlation rebuilds an invalid watermark from a complete pre-prompt `get_branch_messages` snapshot, not replayed model context or an evicting identity cache. Snapshots are limited to 1,024 entries and 4 MiB; duplicate IDs, surplus exact-text matches, unavailable history, and exceeded bounds leave users uncorrelated rather than claiming an old entry. Repeated accepted prompts within a turn consume matching branch occurrences in order. User entries never grant terminal ownership to a later turn.
+- Timeline correlation rebuilds an invalid watermark from a complete pre-prompt `get_branch_messages` snapshot, not replayed model context or an evicting identity cache. Snapshots are limited to 1,024 entries and 4 MiB; duplicate IDs, surplus exact-text matches, unavailable snapshots, and count/byte overflow leave users uncorrelated rather than claiming an old entry. Repeated accepted prompts within a turn consume matching branch occurrences in order. By default, user entries never grant terminal ownership to a later turn; the explicit legacy mode above is the only exception.
 - Configured MCP servers are supported and bridged into OMP. Paseo's own orchestration tools appear under their native names when the daemon's **Enable Paseo tools** / `daemon.mcp.injectIntoAgents` setting is enabled; other MCP servers remain namespaced. Exact Paseo `toolPolicy` preapproval cannot be represented by OMP `set_host_tools` and therefore fails session startup closed. `disallowedTools` applies only to recognized native OMP built-ins; unknown names are rejected and MCP tools are not silently filtered through it.
 - `qwen2.5:0.5b` is provided only for free exploratory inference. It may ignore exact-output instructions and is not a deterministic protocol or tool-use oracle; use `canary-mock/Deterministic Canary` for assertions.
 - The deterministic mock does not implement OMP's compaction-summary contract, so `/compact` reports `OMP compaction failed` in the canary; compaction remains covered by protocol fixtures.

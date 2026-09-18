@@ -44,7 +44,9 @@ function streamingResponse(frames: unknown[]): Response {
   });
 }
 
-async function createHarness(): Promise<RealHarness> {
+async function createHarness(
+  options: { legacyTerminalOwnership?: boolean } = {},
+): Promise<RealHarness> {
   const root = await mkdtemp(join(tmpdir(), "paseo-omp-real-e2e-"));
   roots.push(root);
   const cwd = join(root, "workspace");
@@ -129,6 +131,9 @@ async function createHarness(): Promise<RealHarness> {
       HOME: root,
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       PI_CODING_AGENT_DIR: agentDir,
+      ...(options.legacyTerminalOwnership
+        ? { PASEO_OMP_LEGACY_TERMINAL_OWNERSHIP: "correlated-user" }
+        : {}),
     },
   });
   // Static importing the host fails on its incompatible Node/Zod declaration graph.
@@ -228,6 +233,56 @@ describe(`OMP ${expectedOmpVersion} real provider`, () => {
           ).toBe(true);
           expect(harness.requests).toHaveLength(2);
           expect(JSON.stringify(harness.requests[1])).toContain("REAL_OMP_TOOL_OK");
+        } finally {
+          unsubscribe();
+        }
+      } finally {
+        await session?.close();
+        await harness.registry.shutdown();
+        harness.modelServer.stop(true);
+      }
+    },
+    180_000,
+  );
+
+  testReal(
+    "reuses one published OMP runtime for three legacy-owned turns",
+    async () => {
+      const harness = await createHarness({ legacyTerminalOwnership: true });
+      let session: AgentSession | undefined;
+      try {
+        const catalog = await harness.client.fetchCatalog({
+          scope: "workspace",
+          cwd: harness.cwd,
+          force: true,
+        });
+        const model = catalog.models.find(
+          (candidate) => candidate.label === "paseo-ci/Conformance Model",
+        );
+        if (!model) throw new Error("OMP did not load the hermetic CI model");
+        session = await harness.client.createSession(
+          {
+            provider: "omp-plugin",
+            cwd: harness.cwd,
+            model: model.id,
+            modeId: "full",
+            thinkingOptionId: model.defaultThinkingOptionId,
+            featureValues: {},
+          },
+          undefined,
+          { persistSession: false },
+        );
+        const events: Array<{ type: string; turnId?: string }> = [];
+        const unsubscribe = session.subscribe((event) => events.push(event));
+        try {
+          for (let turn = 1; turn <= 3; turn += 1) {
+            const result = await session.run(`Complete legacy ownership turn ${turn}.`, {
+              clientMessageId: `real-omp-legacy-${turn}`,
+            });
+            expect(result.finalText).toBe("REAL_OMP_DONE");
+          }
+          expect(events.filter((event) => event.type === "turn_completed")).toHaveLength(3);
+          expect(events.filter((event) => event.type === "turn_failed")).toHaveLength(0);
         } finally {
           unsubscribe();
         }

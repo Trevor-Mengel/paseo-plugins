@@ -230,12 +230,17 @@ async function waitForReplay<T>(operation: Promise<T>, signal: AbortSignal): Pro
   }
 }
 
+type PendingUserEcho = {
+  message: Extract<OmpMessage, { role: "user" }>;
+  legacyOwnershipSequence?: number;
+};
+
 type PendingUser = {
   clientMessageId: string;
   text: string;
   accepted: boolean;
   fallbackOnFinish: boolean;
-  bufferedEchoes: OmpMessage[];
+  bufferedEchoes: PendingUserEcho[];
 };
 
 type ActiveTurn = {
@@ -259,6 +264,9 @@ type ActiveTurn = {
   terminalOwnershipRejected: boolean;
   replayingBufferedEvents: boolean;
   bufferedTerminalOwnershipEvidence: boolean;
+  legacyOwnershipSequence: number;
+  legacyOwnershipEvidenceSequence?: number;
+  terminalOwnershipFence: number;
   agentInvoked?: boolean;
   nativeRequestId?: string;
   promptAcceptedEventIndex?: number;
@@ -283,7 +291,7 @@ type ActiveTurn = {
   deferredAgentEnd?: Extract<OmpRpcEvent, { type: "agent_end" }>;
   bufferedEvents: OmpRpcEvent[];
   pendingUsers: PendingUser[];
-  userEchoes: OmpMessage[];
+  userEchoes: PendingUserEcho[];
   userCorrelationActive: boolean;
   userLookups: Set<Promise<void>>;
   completedMessageCount: number;
@@ -623,6 +631,12 @@ function slashCommandName(text: string): string | undefined {
 function nativeEntryId(message: OmpMessage): string | undefined {
   return message.entryId;
 }
+function userMessageText(message: Extract<OmpMessage, { role: "user" }>): string {
+  if (typeof message.content === "string") return message.content;
+  return message.content
+    .flatMap((part) => (part.type === "text" && part.text !== undefined ? [part.text] : []))
+    .join("\n\n");
+}
 
 type AgentEndOutcome = "completed" | "failed" | "canceled";
 type AssistantTerminalStatus = AgentEndOutcome | "unavailable";
@@ -823,6 +837,8 @@ function createActiveTurn(
     terminalOwnershipRejected: false,
     replayingBufferedEvents: false,
     bufferedTerminalOwnershipEvidence: false,
+    legacyOwnershipSequence: 0,
+    terminalOwnershipFence: 0,
     terminalOwnershipRequired,
     steersInFlight: 0,
     steerReady: Promise.withResolvers<void>(),
@@ -1956,7 +1972,11 @@ export class OmpProviderSession {
       this.projector.acceptLiveTurn(turn.turnId);
       for (const event of bufferedEvents) this.handleTurnEvent(turn, event);
       turn.replayingBufferedEvents = false;
-      if (acknowledgement.agentInvoked === true && turn.bufferedTerminalOwnershipEvidence) {
+      if (
+        turn.bufferedTerminalOwnershipEvidence &&
+        (acknowledgement.agentInvoked === true ||
+          (this.legacyTerminalOwnership && turn.legacyOwnershipEvidenceSequence !== undefined))
+      ) {
         this.markTerminalOwnershipEvidence(turn);
       }
       if (
@@ -3294,11 +3314,13 @@ export class OmpProviderSession {
         return;
       }
       if (event.requestId !== undefined) this.markTerminalOwnershipEvidence(turn);
+      turn.terminalOwnershipFence = turn.legacyOwnershipSequence;
       if (
         !turn.interrupted &&
         turn.terminalOwnershipRequired &&
         !turn.terminalOwnershipEvidence &&
-        !(turn.replayingBufferedEvents && turn.bufferedTerminalOwnershipEvidence)
+        !(turn.replayingBufferedEvents && turn.bufferedTerminalOwnershipEvidence) &&
+        !(this.legacyTerminalOwnership && turn.terminalOwnershipFence > 0)
       ) {
         turn.terminalOwnershipRejected = true;
         this.scheduleTerminalOwnershipTimeout(turn);
@@ -3331,7 +3353,7 @@ export class OmpProviderSession {
     this.projector.project(event, turn.turnId);
   }
 
-  private projectUserEcho(turn: ActiveTurn, message: OmpMessage): void {
+  private projectUserEcho(turn: ActiveTurn, message: Extract<OmpMessage, { role: "user" }>): void {
     turn.userEchoObserved = true;
     const entryId = nativeEntryId(message);
     if (
@@ -3350,7 +3372,7 @@ export class OmpProviderSession {
       this.handleRuntimeFailure();
       return;
     }
-    turn.userEchoes.push(message);
+    turn.userEchoes.push({ message });
     this.drainUserEchoes(turn);
   }
 
@@ -3370,8 +3392,9 @@ export class OmpProviderSession {
 
   private async correlateUserEchoes(turn: ActiveTurn): Promise<void> {
     while (turn.userEchoes.length > 0) {
-      const message = turn.userEchoes[0];
-      if (!message) return;
+      const echo = turn.userEchoes[0];
+      if (!echo) return;
+      const { message } = echo;
       const entryId = nativeEntryId(message);
       if (
         entryId &&
@@ -3399,6 +3422,16 @@ export class OmpProviderSession {
         pending.bufferedEchoes.push(...turn.userEchoes.splice(0));
         return;
       }
+      const promptMatched = userMessageText(message) === pending.text;
+      if (
+        promptMatched &&
+        echo.legacyOwnershipSequence === undefined &&
+        turn.terminalOwnershipRequired &&
+        this.legacyTerminalOwnership
+      ) {
+        turn.legacyOwnershipSequence += 1;
+        echo.legacyOwnershipSequence = turn.legacyOwnershipSequence;
+      }
       let resolvedId = entryId ?? this.claimUnclaimedBranchEntry(turn, pending.text);
       let claimedFromBranch = resolvedId !== undefined && resolvedId !== entryId;
       if (!resolvedId && (await this.refreshBranchEntries(turn, pending))) {
@@ -3416,7 +3449,13 @@ export class OmpProviderSession {
       turn.userEchoes.shift();
       if (!resolvedId) return;
       turn.pendingUsers.shift();
-      this.publishCorrelatedUser(turn, pending, resolvedId, claimedFromBranch);
+      this.publishCorrelatedUser(
+        turn,
+        pending,
+        resolvedId,
+        claimedFromBranch,
+        promptMatched ? echo.legacyOwnershipSequence : undefined,
+      );
     }
   }
   private async refreshBranchEntries(turn: ActiveTurn, pending: PendingUser): Promise<boolean> {
@@ -4287,6 +4326,7 @@ export class OmpProviderSession {
     pending: PendingUser,
     entryId?: string,
     claimedFromBranch = false,
+    legacyOwnershipSequence?: number,
   ): void {
     if (entryId) {
       if (this.emittedEntryIds.has(entryId)) return;
@@ -4294,8 +4334,8 @@ export class OmpProviderSession {
         (entry) => entry.entryId === entryId,
       );
       // A claimed entry, an entry a refresh reported unseen, and a live ID the watermark has
-      // never held are each new relative to a VALID watermark. That is the only user evidence
-      // the legacy mode accepts; an invalid watermark proves nothing about this runtime.
+      // never held are each new relative to a VALID watermark. Legacy ownership additionally
+      // requires an exact prompt match observed before the terminal frame.
       const newBranchEntry =
         this.branchWatermarkValid &&
         (claimedFromBranch || unclaimedIndex >= 0 || !this.branchEntryIds.has(entryId));
@@ -4310,12 +4350,15 @@ export class OmpProviderSession {
       if (
         turn.terminalOwnershipRequired &&
         this.legacyTerminalOwnership &&
+        legacyOwnershipSequence !== undefined &&
         newBranchEntry &&
         this.branchWatermarkValid &&
-        // A terminal frame already refused for missing ownership stays refused: evidence that
-        // arrives after an agent_end can never reach back and authorize it.
         !turn.terminalOwnershipRejected
       ) {
+        turn.legacyOwnershipEvidenceSequence = Math.min(
+          turn.legacyOwnershipEvidenceSequence ?? legacyOwnershipSequence,
+          legacyOwnershipSequence,
+        );
         if (turn.replayingBufferedEvents) turn.bufferedTerminalOwnershipEvidence = true;
         else this.markTerminalOwnershipEvidence(turn);
       }
@@ -4510,9 +4553,10 @@ export class OmpProviderSession {
     turn: ActiveTurn,
     event: Extract<OmpRpcEvent, { type: "agent_end" }>,
   ): Promise<void> {
-    // Evidence arriving during this check cannot authorize an older terminal frame.
+    // Only evidence or a matching user echo observed before this terminal may authorize it.
     const ownershipObserved =
       turn.terminalOwnershipEvidence || turn.bufferedTerminalOwnershipEvidence;
+    const legacyOwnershipFence = turn.terminalOwnershipFence;
     await Promise.allSettled(turn.userLookups);
     if (!turn.agentEndPending || turn.terminal || this.activeTurn !== turn) return;
     while (turn.userEchoes.length > 0) {
@@ -4544,9 +4588,15 @@ export class OmpProviderSession {
         turn.deferredAgentEnd = undefined;
         return;
       }
+      const legacyOwnershipObserved =
+        this.legacyTerminalOwnership &&
+        legacyOwnershipFence > 0 &&
+        turn.legacyOwnershipEvidenceSequence !== undefined &&
+        turn.legacyOwnershipEvidenceSequence <= legacyOwnershipFence;
       if (
         turn.terminalOwnershipRequired &&
-        (!ownershipObserved || !turn.terminalOwnershipEvidence)
+        (!ownershipObserved || !turn.terminalOwnershipEvidence) &&
+        !legacyOwnershipObserved
       ) {
         turn.agentEndPending = false;
         turn.terminalizing = false;
@@ -4623,7 +4673,7 @@ export class OmpProviderSession {
   private publishPendingUsers(turn: ActiveTurn): void {
     for (const pending of turn.pendingUsers.splice(0)) {
       for (const echo of pending.bufferedEchoes) {
-        const entryId = nativeEntryId(echo);
+        const entryId = nativeEntryId(echo.message);
         if (entryId) this.seenEntryIds.add(entryId);
       }
       if (pending.accepted && pending.fallbackOnFinish) {
@@ -4632,7 +4682,7 @@ export class OmpProviderSession {
       }
     }
     for (const echo of turn.userEchoes) {
-      const entryId = nativeEntryId(echo);
+      const entryId = nativeEntryId(echo.message);
       if (entryId) this.seenEntryIds.add(entryId);
     }
     turn.userEchoes.length = 0;
@@ -4651,7 +4701,7 @@ export class OmpProviderSession {
     const index = turn.pendingUsers.indexOf(pending);
     if (index >= 0) turn.pendingUsers.splice(index, 1);
     for (const echo of pending.bufferedEchoes) {
-      const entryId = nativeEntryId(echo);
+      const entryId = nativeEntryId(echo.message);
       if (entryId) this.seenEntryIds.add(entryId);
     }
     pending.bufferedEchoes.length = 0;
