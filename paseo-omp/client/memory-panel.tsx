@@ -52,16 +52,17 @@ export function OmpMemoryPanel({ theme, layout, workspaceId }: PluginWorkspacePa
   return (
     <ScrollView contentContainerStyle={styles.root}>
       <View style={{ gap: 4 }}>
-        <Text style={styles.title}>OMP Memory</Text>
+        <Text style={styles.title}>Local Mnemopi Memory</Text>
+        <Text style={styles.subtitle}>Local facts only. Hindsight Cloud is not checked here.</Text>
         <Text style={styles.subtitle}>
-          {memory.data?.bank ? `Bank: ${memory.data.bank}` : "Retained workspace facts"}
+          {memory.data?.bank ? `Local bank: ${memory.data.bank}` : "Local Mnemopi workspace facts"}
         </Text>
       </View>
       <OmpStorePicker theme={theme} store={store} onChange={setStore} />
-      {memory.isLoading ? <Text style={styles.subtitle}>Loading retained facts…</Text> : null}
-      {memory.error ? <Text style={styles.error}>Could not read workspace memory.</Text> : null}
+      {memory.isLoading ? <Text style={styles.subtitle}>Loading local Mnemopi facts…</Text> : null}
+      {memory.error ? <Text style={styles.error}>Could not read local Mnemopi facts.</Text> : null}
       {!memory.isLoading && !memory.error && (memory.data?.facts.length ?? 0) === 0 ? (
-        <Text style={styles.subtitle}>No retained facts for this workspace.</Text>
+        <Text style={styles.subtitle}>No local Mnemopi facts for this workspace.</Text>
       ) : null}
       {memory.data?.facts.map((fact) => (
         <View key={fact.id} style={styles.card}>

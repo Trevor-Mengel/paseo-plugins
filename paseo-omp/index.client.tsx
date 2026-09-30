@@ -245,7 +245,7 @@ export default function contribute(client: PluginClientContext) {
         workspaceId: entry.workspaceId,
         agentId: agent.id,
         button: {
-          title: "OMP workspace memory",
+          title: "Local Mnemopi facts · Hindsight Cloud not checked",
           icon: "Brain",
           label: "Memory",
           behavior: { kind: "popover", Content: MemoryPopover },
