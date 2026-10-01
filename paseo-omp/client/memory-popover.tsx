@@ -51,13 +51,15 @@ export function MemoryPopover(props: PluginButtonContentProps) {
         <Text style={styles.title}>Local Mnemopi · {storeLabel(store)}</Text>
         <Text style={styles.muted}>{facts.length} facts</Text>
       </View>
-      <Text style={styles.muted}>Local facts only. Hindsight Cloud is not checked here.</Text>
+      <Text style={styles.muted}>Shows local facts only.</Text>
       {memory.isLoading ? <Text style={styles.muted}>Loading local Mnemopi facts…</Text> : null}
       {memory.error ? <Text style={styles.error}>Could not read local Mnemopi facts.</Text> : null}
       {!memory.isLoading && !memory.error && facts.length === 0 ? (
         <Text style={styles.muted}>No local Mnemopi facts for this workspace.</Text>
       ) : null}
-      <Text style={styles.muted}>{memory.data?.bank ?? "No local bank found"}</Text>
+      {!memory.isLoading && !memory.error && memory.data?.bank ? (
+        <Text style={styles.muted}>{memory.data.bank}</Text>
+      ) : null}
       {facts.slice(0, PREVIEW_LIMIT).map((fact) => (
         <View key={fact.id} style={styles.card}>
           <Text style={styles.fact}>{`${fact.subject} ${fact.predicate} ${fact.object}`}</Text>

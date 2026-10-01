@@ -53,7 +53,7 @@ export function OmpMemoryPanel({ theme, layout, workspaceId }: PluginWorkspacePa
     <ScrollView contentContainerStyle={styles.root}>
       <View style={{ gap: 4 }}>
         <Text style={styles.title}>Local Mnemopi Memory</Text>
-        <Text style={styles.subtitle}>Local facts only. Hindsight Cloud is not checked here.</Text>
+        <Text style={styles.subtitle}>Shows local facts only.</Text>
         <Text style={styles.subtitle}>
           {memory.data?.bank ? `Local bank: ${memory.data.bank}` : "Local Mnemopi workspace facts"}
         </Text>

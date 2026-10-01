@@ -133,7 +133,7 @@ export default function contribute(client: PluginClientContext) {
   });
   const removeOpenMemory = client.addCommandCenterItem({
     id: "open-memory",
-    title: "Open OMP Memory",
+    title: "Open local memory",
     icon: "Brain",
     keywords: ["omp", "memory", "facts", "recall"],
     context: "workspace",
@@ -245,7 +245,7 @@ export default function contribute(client: PluginClientContext) {
         workspaceId: entry.workspaceId,
         agentId: agent.id,
         button: {
-          title: "Local Mnemopi facts · Hindsight Cloud not checked",
+          title: "Local memory",
           icon: "Brain",
           label: "Memory",
           behavior: { kind: "popover", Content: MemoryPopover },
